@@ -89,5 +89,38 @@ target_link_libraries(scef PRIVATE nlohmann_json::nlohmann_json)
 option(SCEF_BUILD_TESTS "Build unit tests" ON)
 if(SCEF_BUILD_TESTS)
     enable_testing()
-    # Tests will be added here as they are created
+    find_package(GTest CONFIG REQUIRED)
+
+    # Collect all source files except main.cpp so tests can link against them.
+    set(SCEF_LIB_SOURCES
+        src/Header.cpp
+        src/CryptoManager.cpp
+        src/FileManager.cpp
+        src/FileTable.cpp
+    )
+
+    add_executable(scef_unit_tests
+        tests/unit/test_scef.cpp
+        ${SCEF_LIB_SOURCES}
+    )
+
+    target_include_directories(scef_unit_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_link_libraries(scef_unit_tests PRIVATE
+        GTest::gtest
+        GTest::gtest_main
+    )
+
+    if(TARGET PkgConfig::BOTAN)
+        target_link_libraries(scef_unit_tests PRIVATE PkgConfig::BOTAN)
+    elseif(TARGET Botan::Botan)
+        target_link_libraries(scef_unit_tests PRIVATE Botan::Botan)
+    endif()
+
+    target_link_libraries(scef_unit_tests PRIVATE nlohmann_json::nlohmann_json)
+
+    add_test(NAME scef_unit_tests COMMAND scef_unit_tests)
 endif()

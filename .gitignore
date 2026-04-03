@@ -1,12 +1,19 @@
 # Build
 build/
+out/
 cmake-build-*/
 
 # IDE
 .idea/
 .vscode/
+.vs/
+.clangd
 *.swp
 *~
+
+# Python
+__pycache__/
+.pytest_cache/
 
 # OS
 Thumbs.db

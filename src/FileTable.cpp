@@ -25,16 +25,23 @@ std::string FileTable::getChecksum() {
     return Botan::hex_encode(digest);
 }
 
-void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checkSum, size_t offset) {
+void FileTable::resetChecksum() {
+    funcSHA_->clear();
+}
+
+void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checkSum,
+                             size_t offset, size_t actual_size) {
     FileEntry file;
     std::string fileName = std::filesystem::path(pathToFile).filename().string();
-    while (std::any_of(filesTable_.begin(), filesTable_.end(), 
+    while (std::any_of(filesTable_.begin(), filesTable_.end(),
         [&fileName](const FileEntry& fileEntry){return fileName == fileEntry.name;})) {
             fileName = "(copy)" + fileName;
     }
     file.name = fileName;
-    file.size = std::filesystem::file_size(pathToFile);
-    size_t numChunks = file.size/BLOCK_SIZE + (file.size % BLOCK_SIZE != 0);
+    // Use the actual bytes read during writeChunks() — not a re-query of the filesystem.
+    // This avoids a TOCTOU race if the source file changes between writing and recording.
+    file.size = actual_size;
+    size_t numChunks = file.size / BLOCK_SIZE + (file.size % BLOCK_SIZE != 0);
     file.chunks = numChunks;
     file.offset = offset;
     file.checksum_sha256 = checkSum;
@@ -44,6 +51,7 @@ void FileTable::addFileEntry(const std::string& pathToFile, const std::string& c
 
 std::string FileTable::serialize() {
     nlohmann::json j;
+    j["next_write_offset"] = next_write_offset_;
     j["files"] = nlohmann::json::array();
     for (const auto& file : filesTable_) {
         nlohmann::json tmp;
@@ -60,6 +68,9 @@ std::string FileTable::serialize() {
 void FileTable::deserialize(const std::string& data) {
     nlohmann::json tmp = nlohmann::json::parse(data);
     filesTable_.clear();
+    // next_write_offset is present in containers written by this implementation.
+    // Older containers (or containers without files) may omit it — default to 0.
+    next_write_offset_ = tmp.value("next_write_offset", uint64_t{0});
     for (const auto& file : tmp["files"]) {
         FileEntry entry;
         entry.name = file["name"].get<std::string>();

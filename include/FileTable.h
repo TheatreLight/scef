@@ -33,17 +33,30 @@ public:
     ~FileTable() = default;
 
     void updateChecksum(const void* chunk, size_t size);
+    // Finalize and return the hex-encoded SHA-256 digest, then reset the hasher.
     std::string getChecksum();
-    void addFileEntry(const std::string& pathToFile, const std::string& checkSum, size_t offset);
+    // Explicitly reset the hasher state. Call at the start of each new file
+    // before the first updateChecksum() to guarantee a clean slate.
+    void resetChecksum();
+    void addFileEntry(const std::string& pathToFile, const std::string& checkSum, size_t offset,
+                      size_t actual_size);
     std::string serialize();
     void deserialize(const std::string& data);
     std::string to_string(bool isFull = false) const;
     void reset();
     const FileEntry& getFileInfoByName(const std::string& fName);
     const std::vector<FileEntry>& getFilesTable() const;
+
+    // Offset of the byte immediately after the last written data chunk.
+    // Persisted in the file table JSON so add() can resume without
+    // recalculating across slot boundaries.
+    void setNextWriteOffset(uint64_t offset) { next_write_offset_ = offset; }
+    uint64_t getNextWriteOffset() const { return next_write_offset_; }
+
 private:
     std::vector<FileEntry> filesTable_;
     std::unique_ptr<Botan::HashFunction> funcSHA_;
+    uint64_t next_write_offset_ = 0;
 };
 
 #endif // FILE_TABLE_H

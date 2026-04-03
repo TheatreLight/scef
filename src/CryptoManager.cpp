@@ -1,35 +1,194 @@
 #include "CryptoManager.h"
 #include "Header.h"
 
-CryptoManager::CryptoManager() {}
+#include "botan/aead.h"
+#include "botan/auto_rng.h"
+#include "botan/mac.h"
+#include "botan/mem_ops.h"
+#include "botan/pwdhash.h"
 
-CryptoManager::~CryptoManager() {}
+#include <cstring>
+#include <span>
+#include <stdexcept>
+
+CryptoManager::CryptoManager() {
+    kek_.fill(0);
+    dek_.fill(0);
+}
+
+CryptoManager::~CryptoManager() {
+    // Zero key material on destruction using Botan's scrub (resistant to optimizer removal).
+    Botan::secure_scrub_memory(kek_.data(), KEK_SIZE);
+    Botan::secure_scrub_memory(dek_.data(), DEK_SIZE);
+}
+
+void CryptoManager::deriveKek(const std::string& password, Header& header) {
+    auto pwdhash_fam = Botan::PasswordHashFamily::create("Argon2id");
+    if (!pwdhash_fam) {
+        throw std::runtime_error("Argon2id not available in this Botan build");
+    }
+    auto pwdhash = pwdhash_fam->from_params(header.getKdfMKib(), header.getKdfT(), header.getKdfP());
+    pwdhash->derive_key(kek_.data(), KEK_SIZE,
+                        password.c_str(), password.size(),
+                        header.getSaltData().data(), header.getSaltData().size());
+    kek_ready_ = true;
+    dek_ready_ = false; // KEK changed; DEK must be re-derived via unwrapDek.
+}
+
+void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out,
+                             std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
+                             std::array<uint8_t, 16>& dek_auth_tag_out) {
+    if (!kek_ready_) {
+        throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
+    }
+
+    // Generate a cryptographically random DEK and nonce.
+    Botan::AutoSeeded_RNG rng;
+    rng.randomize(dek_.data(), DEK_SIZE);
+    dek_ready_ = true;
+
+    rng.randomize(dek_nonce_out.data(), dek_nonce_out.size());
+
+    // Encrypt the random DEK with AES-256-GCM using the KEK.
+    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Encryption);
+    if (!cipher) {
+        throw std::runtime_error("AES-256/GCM not available");
+    }
+    cipher->set_key(kek_.data(), KEK_SIZE);
+    cipher->set_associated_data(std::span<const uint8_t>{}); // no additional data
+    cipher->start(dek_nonce_out.data(), dek_nonce_out.size());
+
+    // Input: 32-byte DEK. Output: 32-byte ciphertext + 16-byte tag.
+    Botan::secure_vector<uint8_t> buf(dek_.begin(), dek_.end());
+    cipher->finish(buf);
+
+    // buf now holds: 32 bytes ciphertext + 16 bytes tag (total 48 bytes).
+    if (buf.size() != DEK_SIZE + 16) {
+        throw std::runtime_error("Unexpected AES-GCM output size for DEK wrap");
+    }
+    std::copy(buf.begin(), buf.begin() + DEK_SIZE, encrypted_dek_out.begin());
+    std::copy(buf.begin() + DEK_SIZE, buf.end(), dek_auth_tag_out.begin());
+}
+
+void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
+                               const std::array<uint8_t, DEK_SIZE>& encrypted_dek,
+                               const std::array<uint8_t, 16>& dek_auth_tag) {
+    if (!kek_ready_) {
+        throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
+    }
+
+    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Decryption);
+    if (!cipher) {
+        throw std::runtime_error("AES-256/GCM not available");
+    }
+    cipher->set_key(kek_.data(), KEK_SIZE);
+    cipher->set_associated_data(std::span<const uint8_t>{});
+    cipher->start(dek_nonce.data(), dek_nonce.size());
+
+    // Input to finish(): ciphertext + tag (32 + 16 = 48 bytes).
+    Botan::secure_vector<uint8_t> buf;
+    buf.insert(buf.end(), encrypted_dek.begin(), encrypted_dek.end());
+    buf.insert(buf.end(), dek_auth_tag.begin(), dek_auth_tag.end());
+
+    try {
+        cipher->finish(buf);
+    } catch (const Botan::Invalid_Authentication_Tag&) {
+        throw std::runtime_error("Wrong password: DEK authentication failed");
+    }
+
+    // buf now holds the 32-byte plaintext DEK.
+    if (buf.size() != DEK_SIZE) {
+        throw std::runtime_error("Unexpected decrypted DEK size");
+    }
+    std::copy(buf.begin(), buf.end(), dek_.begin());
+    dek_ready_ = true;
+}
+
+std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data,
+                                                      size_t size) const {
+    if (!kek_ready_) {
+        throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
+    }
+    auto mac = Botan::MessageAuthenticationCode::create("HMAC(SHA-256)");
+    if (!mac) {
+        throw std::runtime_error("HMAC-SHA256 not available");
+    }
+    mac->set_key(kek_.data(), KEK_SIZE);
+    mac->update(data, size);
+    auto digest = mac->final();
+    std::array<uint8_t, 32> result{};
+    std::copy(digest.begin(), digest.end(), result.begin());
+    return result;
+}
 
 void CryptoManager::encrypt(const char* data, char* output, size_t dataSize) {
-    // TODO: it's just a stub
-    // ADD NONCE
-    for (int i = 0; i < 12; ++i) {
-        *output++ = '\0';
+    if (!dek_ready_) {
+        throw std::runtime_error("CryptoManager: DEK not ready; call wrapDek() or unwrapDek() first");
     }
-    // SIMULATE ENCRYPTING
-    while (dataSize--) {
-        *output++ = *data++;
+
+    // Generate a random 96-bit nonce for this block.
+    Botan::AutoSeeded_RNG rng;
+    std::array<uint8_t, NONCE_SIZE> nonce{};
+    rng.randomize(nonce.data(), nonce.size());
+
+    // Write nonce first.
+    std::memcpy(output, nonce.data(), NONCE_SIZE);
+    output += NONCE_SIZE;
+
+    // Encrypt with AES-256-GCM.
+    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Encryption);
+    if (!cipher) {
+        throw std::runtime_error("AES-256/GCM not available");
     }
-    // ADD AUTH TAG
-    for (int i = 0; i < 16; ++i) {
-        *output++ = '\0';
-    }
+    cipher->set_key(dek_.data(), DEK_SIZE);
+    cipher->set_associated_data(std::span<const uint8_t>{});
+    cipher->start(nonce.data(), nonce.size());
+
+    Botan::secure_vector<uint8_t> buf(reinterpret_cast<const uint8_t*>(data),
+                                       reinterpret_cast<const uint8_t*>(data) + dataSize);
+    cipher->finish(buf);
+
+    // buf: dataSize bytes ciphertext + 16 bytes auth tag.
+    std::memcpy(output, buf.data(), buf.size());
+}
+
+void CryptoManager::generateSalt(std::array<uint8_t, 32>& salt) {
+    Botan::AutoSeeded_RNG rng;
+    rng.randomize(salt.data(), salt.size());
 }
 
 void CryptoManager::decrypt(const char* data, char* output, size_t dataSize) {
-    // TODO: it's just a stub
-    // Remove Nonce
-    for (int i = 0; i < 12; ++i) {
-        data++;
+    if (!dek_ready_) {
+        throw std::runtime_error("CryptoManager: DEK not ready; call wrapDek() or unwrapDek() first");
     }
-    // Simulate Decrypting
-    while (dataSize--) {
-        *output++ = *data++;
+
+    // Read nonce from the start of the block.
+    std::array<uint8_t, NONCE_SIZE> nonce{};
+    std::memcpy(nonce.data(), data, NONCE_SIZE);
+    data += NONCE_SIZE;
+
+    // Input: dataSize bytes ciphertext + 16 bytes tag.
+    size_t enc_size = dataSize + AUTH_TAG_SIZE;
+    Botan::secure_vector<uint8_t> buf(reinterpret_cast<const uint8_t*>(data),
+                                       reinterpret_cast<const uint8_t*>(data) + enc_size);
+
+    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Decryption);
+    if (!cipher) {
+        throw std::runtime_error("AES-256/GCM not available");
     }
-    // Remove Auth tag (copied without it)
+    cipher->set_key(dek_.data(), DEK_SIZE);
+    cipher->set_associated_data(std::span<const uint8_t>{});
+    cipher->start(nonce.data(), nonce.size());
+
+    try {
+        cipher->finish(buf);
+    } catch (const Botan::Invalid_Authentication_Tag&) {
+        throw std::runtime_error("Data block authentication failed");
+    }
+
+    if (buf.size() != dataSize) {
+        throw std::runtime_error("Unexpected decrypted size");
+    }
+
+    std::memcpy(output, buf.data(), dataSize);
 }
