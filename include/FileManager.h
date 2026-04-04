@@ -54,6 +54,8 @@ public:
     void printHeader() const;
     void printFilesTable() const;
 
+    const std::vector<FileEntry>& getFilesTable() const { return fileTable_.getFilesTable(); }
+
 private:
     // Returns array of slot offsets computed from header fields.
     std::array<uint64_t, SLOT_COUNT> computeSlotOffsets() const;

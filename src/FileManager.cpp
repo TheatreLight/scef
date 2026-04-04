@@ -40,7 +40,19 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
         header_->setContainerSize(containerSize);
     }
 
-    int streamOpenFlags = std::ios::binary | std::ios::in | std::ios::out;
+    if (createNew && !filesList.empty()) {
+        slotOffsets_ = computeSlotOffsets();
+        uint64_t available = computeAvailableDataCapacity();
+        uint64_t required  = computeRequiredDataBytes();
+        if (required > available) {
+            throw std::runtime_error(
+                "Files too large for container: need " + std::to_string(required) +
+                " bytes of data capacity but container only provides " +
+                std::to_string(available) + " bytes");
+        }
+    }
+
+    auto streamOpenFlags = std::ios::binary | std::ios::in | std::ios::out;
     if (createNew) {
         streamOpenFlags |= std::ios::trunc;
     }

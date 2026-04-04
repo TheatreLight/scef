@@ -8,6 +8,7 @@ cmake-build-*/
 .vscode/
 .vs/
 .clangd
+CMakeLists.txt.user
 *.swp
 *~
 
