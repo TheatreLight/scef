@@ -38,6 +38,9 @@ void print_version() {
 std::string read_password() {
     std::string pw;
     std::getline(std::cin, pw);
+    if (pw.empty()) {
+        throw std::runtime_error("Password cannot be empty");
+    }
     return pw;
 }
 
@@ -61,7 +64,6 @@ int parseArgs(int argc, char** argv, std::string& containerPath, std::string& ou
     }
 
     std::string key;
-    bool sizeSet = false;
     for (int i = 2; i < argc; ++i) {
         if (const std::string arg = foundKey(argv[i]); !arg.empty()) {
             key = arg;
@@ -75,15 +77,10 @@ int parseArgs(int argc, char** argv, std::string& containerPath, std::string& ou
             outputPath = argv[i];
         } else if (key == "-s") {
             container_size = std::stoull(argv[i]);
-            sizeSet = true;
         } else if (key == "--max_table_size") {
             max_table_size = static_cast<uint32_t>(std::stoul(argv[i]));
         }
         key.clear();
-    }
-    if (!sizeSet) {
-        container_size = 278528;
-        std::cout << "Container size not specified, using default: " << container_size << std::endl;
     }
     return 0;
 }
@@ -117,6 +114,10 @@ int main(int argc, char* argv[]) {
                                       textUsage, 6, container_size, max_table_size)) {
             return EXIT_FAILURE;
         }
+        if (containerPath.empty()) {
+            std::cerr << "ERROR: -c <container_dir> is required for create\n";
+            return EXIT_FAILURE;
+        }
         if (container_size == 0) {
             std::cerr << "ERROR: -s <size_bytes> is required for create\n";
             return EXIT_FAILURE;
@@ -140,6 +141,10 @@ int main(int argc, char* argv[]) {
                                       textUsage, 6, container_size, max_table_size)) {
             return EXIT_FAILURE;
         }
+        if (containerPath.empty()) {
+            std::cerr << "ERROR: -c <container_dir> is required for add\n";
+            return EXIT_FAILURE;
+        }
         try {
             const std::string password = read_password();
             fileManager.init(fileList, containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
@@ -155,6 +160,10 @@ int main(int argc, char* argv[]) {
                                       textUsage, 4, container_size, max_table_size)) {
             return EXIT_FAILURE;
         }
+        if (containerPath.empty()) {
+            std::cerr << "ERROR: -c <container_dir> is required for list\n";
+            return EXIT_FAILURE;
+        }
         try {
             const std::string password = read_password();
             fileManager.init(fileList, containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
@@ -168,6 +177,10 @@ int main(int argc, char* argv[]) {
         textUsage = "Usage: scef extract -c <container> -o <path to output> -f <file list(optional)>";
         if (EXIT_FAILURE == parseArgs(argc, argv, containerPath, outputPath, fileList,
                                       textUsage, 6, container_size, max_table_size)) {
+            return EXIT_FAILURE;
+        }
+        if (containerPath.empty()) {
+            std::cerr << "ERROR: -c <container_dir> is required for extract\n";
             return EXIT_FAILURE;
         }
         if (outputPath.empty()) {

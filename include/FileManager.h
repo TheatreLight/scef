@@ -7,7 +7,6 @@
 
 #include <array>
 #include <fstream>
-#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -53,6 +52,9 @@ public:
 
     void printHeader() const;
     void printFilesTable() const;
+
+    // Returned reference is valid only while this FileManager instance is alive.
+    const std::vector<FileEntry>& getFilesTable() const { return fileTable_.getFilesTable(); }
 
 private:
     // Returns array of slot offsets computed from header fields.

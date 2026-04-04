@@ -254,8 +254,9 @@ class TestCorruptContainers:
 
     def test_list_container_single_bit_flip_in_header(self, tmp_path):
         """
-        Flip one bit in the header of a valid container.
-        The HMAC check must catch this and reject the container.
+        Flip one bit in slot 0 header of a valid container.
+        Slot 0 HMAC check fails, but backup slots are intact so
+        readMeta() falls back to slot 1 and the operation succeeds.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -269,8 +270,9 @@ class TestCorruptContainers:
         container_path.write_bytes(bytes(data))
 
         result = list_container(cdir, expect_success=False)
-        assert result.returncode != 0, (
-            "scef list must detect single-bit corruption in header via HMAC"
+        assert result.returncode == 0, (
+            "scef list must recover from single-bit corruption in slot 0 "
+            "via fallback to backup slots"
         )
 
 

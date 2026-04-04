@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg/scripts/buildsystems/vcpkg.cmake"
     CACHE STRING "Vcpkg toolchain file")
@@ -58,32 +58,37 @@ if(NOT TARGET Botan::Botan AND NOT TARGET PkgConfig::BOTAN AND DEFINED VCPKG_INS
     endif()
 endif()
 
-# --- Sources ---
-set(SCEF_SOURCES
-    src/main.cpp
+# --- Core library (Qt-free, reusable by any UI) ---
+add_library(scef_lib STATIC
     src/Header.cpp
     src/CryptoManager.cpp
     src/FileManager.cpp
     src/FileTable.cpp
 )
 
-# --- Main executable ---
-add_executable(scef ${SCEF_SOURCES})
-
-target_include_directories(scef PRIVATE
+target_include_directories(scef_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(scef_lib PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_compile_features(scef_lib PUBLIC cxx_std_20)
+
 if(TARGET PkgConfig::BOTAN)
-    target_link_libraries(scef PRIVATE PkgConfig::BOTAN)
+    target_link_libraries(scef_lib PUBLIC PkgConfig::BOTAN)
 elseif(TARGET Botan::Botan)
-    target_link_libraries(scef PRIVATE Botan::Botan)
+    target_link_libraries(scef_lib PUBLIC Botan::Botan)
 else()
     message(WARNING "Botan 3 not found. Build will fail at link time.")
 endif()
 
-target_link_libraries(scef PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(scef_lib PUBLIC nlohmann_json::nlohmann_json)
+
+# --- CLI executable ---
+add_executable(scef src/main.cpp)
+target_link_libraries(scef PRIVATE scef_lib)
 
 # --- Tests (optional) ---
 option(SCEF_BUILD_TESTS "Build unit tests" ON)
@@ -91,36 +96,21 @@ if(SCEF_BUILD_TESTS)
     enable_testing()
     find_package(GTest CONFIG REQUIRED)
 
-    # Collect all source files except main.cpp so tests can link against them.
-    set(SCEF_LIB_SOURCES
-        src/Header.cpp
-        src/CryptoManager.cpp
-        src/FileManager.cpp
-        src/FileTable.cpp
-    )
-
     add_executable(scef_unit_tests
         tests/unit/test_scef.cpp
-        ${SCEF_LIB_SOURCES}
-    )
-
-    target_include_directories(scef_unit_tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
 
     target_link_libraries(scef_unit_tests PRIVATE
+        scef_lib
         GTest::gtest
         GTest::gtest_main
     )
 
-    if(TARGET PkgConfig::BOTAN)
-        target_link_libraries(scef_unit_tests PRIVATE PkgConfig::BOTAN)
-    elseif(TARGET Botan::Botan)
-        target_link_libraries(scef_unit_tests PRIVATE Botan::Botan)
-    endif()
-
-    target_link_libraries(scef_unit_tests PRIVATE nlohmann_json::nlohmann_json)
-
     add_test(NAME scef_unit_tests COMMAND scef_unit_tests)
+endif()
+
+# --- Qt GUI (optional) ---
+option(SCEF_BUILD_GUI "Build Qt QML GUI" OFF)
+if(SCEF_BUILD_GUI)
+    add_subdirectory(gui)
 endif()

@@ -8,12 +8,16 @@ cmake-build-*/
 .vscode/
 .vs/
 .clangd
+CMakeLists.txt.user
 *.swp
 *~
 
 # Python
 __pycache__/
 .pytest_cache/
+
+# Test data (large personal files, not tracked)
+tests/integration/test_data/
 
 # OS
 Thumbs.db
