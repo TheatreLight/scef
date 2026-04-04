@@ -3,12 +3,15 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import "utils.js" as Utils
 
 Page {
     padding: 32
 
     property int selectedDriveIndex: -1
     property int driveListRevision: 0
+
+    Component.onCompleted: controller.driveListModel.refresh()
 
     Connections {
         target: controller.driveListModel
@@ -17,12 +20,6 @@ Page {
         }
     }
 
-    function formatSize(bytes) {
-        if (bytes < 1024) return bytes + " B"
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KiB"
-        if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MiB"
-        return (bytes / 1073741824).toFixed(1) + " GiB"
-    }
 
     Dialog {
         id: overwriteDialog
@@ -46,10 +43,7 @@ Page {
         id: customDirDialog
         title: "Select directory for container"
         onAccepted: {
-            var path = selectedFolder.toString()
-                .replace(/^file:\/\/\//, "")
-                .replace(/^file:\/\//, "")
-            stackView.push(createPage, { "initialDestDir": decodeURIComponent(path) })
+            stackView.push(createPage, { "initialDestDir": selectedFolder.toString() })
         }
     }
 
@@ -71,8 +65,9 @@ Page {
 
         onAccepted: {
             errorLabel.visible = false
-            var error = controller.openContainer(passwordDialog.containerPath,
-                                                  passwordDialog.password)
+            var pw = passwordDialog.password
+            passwordDialog.password = ""
+            var error = controller.openContainer(passwordDialog.containerPath, pw)
             if (error !== "") {
                 errorLabel.text = error
                 errorLabel.visible = true
@@ -149,7 +144,7 @@ Page {
                                 }
 
                                 Label {
-                                    text: formatSize(model.freeSpace) + " free of " + formatSize(model.totalSpace)
+                                    text: Utils.formatSize(model.freeSpace) + " free of " + Utils.formatSize(model.totalSpace)
                                     font.pixelSize: 12
                                     opacity: 0.6
                                 }

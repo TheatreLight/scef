@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <ios>
 #include <iostream>
 #include <istream>
@@ -359,21 +358,21 @@ void FileManager::readMeta() {
     containerStream_->clear();
 
     // Crash resilience strategy (spec 4.6.3):
-    //   - Try slot 0 first (magic + HMAC).
-    //   - If slot 0 magic is invalid (unreadable/truncated), fall back to slots 1–3.
-    //   - HMAC failure is treated as fatal (wrong password or deliberate corruption).
-    //     Falling back to backup slots on HMAC failure would silently bypass a
-    //     security check and confuse the "wrong password" case.
-    //
-    // Rationale: a crash mid-write typically leaves the primary slot partially
-    // written (bad magic or truncated read). Backup slots retain the previous
-    // valid state. An HMAC mismatch on a slot with valid magic means either a
-    // wrong password or corruption of specific fields — neither of which is
-    // recoverable by trying another slot written with the same password.
+    //   - Try all 4 slots (0, then 1-3 as backups).
+    //   - For each slot: check magic → init crypto (derive KEK) → verify HMAC.
+    //   - First slot that passes all three checks wins.
+    //   - If a slot has valid magic but HMAC fails, continue to next slot
+    //     (the HMAC-protected region may be corrupted by a bad sector/USB glitch
+    //     while backup slots remain intact).
+    //   - If ALL slots fail:
+    //       - If at least one had valid magic but HMAC failed → "wrong password
+    //         or container corrupted" (wrong password is the common case since
+    //         all slots share the same key).
+    //       - If no slot had valid magic → "invalid container".
 
     // Helper: read one header slot. Returns true if magic is valid.
     auto trySlotMagic = [this](uint64_t offset) -> bool {
-        containerStream_->clear(); // clear any fail/eof bits before seek
+        containerStream_->clear();
         containerStream_->seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         HeaderBuffer hdrBuf;
         char* hdrPtr = reinterpret_cast<char*>(hdrBuf.data());
@@ -384,41 +383,35 @@ void FileManager::readMeta() {
         return header_->validate();
     };
 
-    // Step 1: try slot 0.
-    if (trySlotMagic(0)) {
-        // Slot 0 magic is valid — authenticate and use it.
-        activeSlotOffset_ = 0;
-        initCryptoForRead();
-        verifyHeaderHmac();
-        readFilesTable();
-        return;
-    }
-
-    // Slot 0 magic failed (e.g. partial overwrite during crash).
-    // We cannot compute backup offsets without containerSize, which comes from
-    // the header. Use a fallback scan: read each backup slot by trying fixed
-    // fractions of the file size.
+    // Compute slot offsets from file size (== container size for well-formed files).
+    // Cannot use slotOffsets_ here — it's populated after readMeta() returns.
     containerStream_->seekg(0, std::ios::end);
     uint64_t fileSize = static_cast<uint64_t>(containerStream_->tellg());
     if (fileSize == 0) {
         throw std::runtime_error("Invalid container: file is empty");
     }
 
-    // Attempt slots 1, 2, 3 using the on-disk file size as a proxy for
-    // container_size (they should match for a well-formed container).
-    const uint32_t hdrSize = HEADER_SIZE;
-    bool recovered = false;
+    std::array<uint64_t, SLOT_COUNT> offsets{};
+    for (size_t i = 1; i < SLOT_COUNT; ++i) {
+        offsets[i] = computeSlotOffset(fileSize, SLOT_PERCENTAGES[i], HEADER_SIZE);
+    }
 
     // Use secure_vector<char> so the password copy is scrubbed on all exit paths,
     // including exception unwinds — plain std::string does not guarantee zeroing.
     Botan::secure_vector<char> savedPassword(password_.begin(), password_.end());
+
+    bool recovered = false;
+    int slotsWithValidMagic = 0;
     std::string lastError = "all slots unreadable";
 
-    for (size_t i = 1; i < SLOT_COUNT; ++i) {
-        uint64_t slotOff = computeSlotOffset(fileSize, SLOT_PERCENTAGES[i], hdrSize);
+    for (size_t i = 0; i < SLOT_COUNT; ++i) {
+        uint64_t slotOff = offsets[i];
+
         if (!trySlotMagic(slotOff)) {
-            continue; // Bad magic in this backup slot, try next.
+            continue; // Bad magic or unreadable — try next slot.
         }
+
+        slotsWithValidMagic++;
 
         // Restore password (may have been cleared by a previous failed attempt).
         password_.assign(savedPassword.begin(), savedPassword.end());
@@ -438,9 +431,15 @@ void FileManager::readMeta() {
     // secure_vector destructor scrubs savedPassword automatically.
 
     if (!recovered) {
-        throw std::runtime_error(
-            "Invalid container: primary header slot has wrong magic bytes and "
-            "all backup slots failed: " + lastError);
+        if (slotsWithValidMagic > 0) {
+            throw std::runtime_error(
+                "Wrong password or container corrupted: " +
+                std::to_string(slotsWithValidMagic) +
+                " slot(s) had valid magic but all failed authentication: " + lastError);
+        } else {
+            throw std::runtime_error(
+                "Invalid container: no slot has valid magic bytes");
+        }
     }
 
     readFilesTable();

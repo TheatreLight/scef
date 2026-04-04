@@ -63,10 +63,9 @@ QString ScefController::createContainer(const QString& destDir,
         return QString::fromUtf8(e.what());
     }
 
-    // Heavy work (write/encrypt) runs on a background thread
-    runAsync([this]() {
-        fileManager_->write();
-    }, QString::fromStdString(dir), std::move(pwd));
+    // Heavy work (write/encrypt) runs on a background thread.
+    // Transfer fileManager_ ownership to the worker to avoid race conditions.
+    runAsync(std::move(fileManager_), QString::fromStdString(dir), std::move(pwd));
 
     return {};
 }
@@ -104,6 +103,11 @@ QString ScefController::addFiles(const QStringList& filePaths)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
+    // FileManager::init() can only be called once per instance (it opens the stream
+    // and reads metadata). Each add/extract operation requires a fresh FileManager
+    // that re-reads the current container state from disk. This is intentional:
+    // it ensures we always operate on the latest on-disk data, avoiding stale state
+    // if the container was modified externally between operations.
     try {
         auto paths = toStdPaths(filePaths);
         auto dir = currentContainerDir_.toStdString();
@@ -180,29 +184,38 @@ QString ScefController::currentContainerPath() const
     return currentContainerDir_;
 }
 
-void ScefController::runAsync(std::function<void()> work, const QString& dir, std::string pwd)
+void ScefController::runAsync(std::unique_ptr<FileManager> fm, QString dir, std::string pwd)
 {
     busy_ = true;
     emit busyChanged();
 
-    auto* thread = QThread::create([this, work = std::move(work), dir, pwd = std::move(pwd)]() {
+    // Transfer FileManager ownership to the worker thread to avoid race conditions.
+    // The worker exclusively owns fm; ownership returns to the main thread on completion.
+    auto* fmRaw = fm.get();
+    auto* thread = QThread::create([this, fm = std::move(fm), fmRaw, dir, pwd = std::move(pwd)]() mutable {
         QString error;
         try {
-            work();
+            fmRaw->write();
         } catch (const std::exception& e) {
             error = QString::fromUtf8(e.what());
         }
 
-        QMetaObject::invokeMethod(this, [this, error, dir, pwd = std::move(pwd)]() mutable {
+        QMetaObject::invokeMethod(this, [this, error, dir, fm = std::move(fm), pwd = std::move(pwd)]() mutable {
             if (error.isEmpty()) {
                 scrubPassword();
                 currentPassword_ = std::move(pwd);
                 currentContainerDir_ = dir;
+                fileManager_ = std::move(fm);
                 containerOpen_ = true;
                 emit containerOpenChanged();
                 refreshFileList();
             } else {
-                fileManager_.reset();
+                // Scrub password before destruction on failure path
+                if (!pwd.empty()) {
+                    Botan::secure_scrub_memory(pwd.data(), pwd.size());
+                    pwd.clear();
+                }
+                fm.reset();
             }
 
             busy_ = false;

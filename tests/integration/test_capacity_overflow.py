@@ -20,15 +20,15 @@ Expected behaviour (what the fix must achieve):
 
 Real files used
 ---------------
-The tests use two documents from docs/official/ to make the scenario concrete
-and reproducible:
+The tests use two fixed files from tests/integration/test_data/ so that their
+sizes are stable across checkout:
 
-  Task_VKR_final.pdf  — 199219 bytes
-  vkr_final.docx      — 108981 bytes
-  Combined raw size   — 308200 bytes
+  pdf_c.pdf                              — 448509 bytes
+  84c414e6-f467-4ded-976d-da6fbb196da2.pdf — 63726 bytes
+  Combined raw size                      — 512235 bytes
 
 After AES-256-GCM encryption (12-byte nonce + 16-byte auth tag per 65536-byte
-block), the encrypted size of both files together is 308368 bytes.
+block), the encrypted size of both files together is 512459 bytes.
 
 Container capacity (how many bytes are available for data blocks) depends on
 the slot layout: 4 × (Header 4096 B + FileTable 65536 B) = 278528 B of slot
@@ -36,20 +36,20 @@ overhead is subtracted, and slot positions at 0/25/50/75% of the container
 further fragment usable space.
 
 Key sizes:
-  300000 B  container => 21472 B data capacity  (far too small)
-  583680 B  container => 305152 B data capacity (3216 B short)
-  587776 B  container => 309248 B data capacity (880 B surplus, just fits)
-    8 MiB   container => 8110080 B data capacity (plenty of room)
+  300000 B  container =>   21472 B data capacity  (far too small)
+  790528 B  container =>  512000 B data capacity  (459 B short)
+  794624 B  container =>  516096 B data capacity  (3637 B surplus, just fits)
+    8 MiB   container => 8110080 B data capacity  (plenty of room)
 
 Test matrix
 -----------
-  TC-CAP-01  300 KB container, both files (~308 KB) -> create MUST fail
+  TC-CAP-01  300 KB container, both files (~512 KB) -> create MUST fail
   TC-CAP-02  Good-size container (8 MiB), both files -> full round-trip passes
-  TC-CAP-03  Just-barely-fits container (587776 B)   -> full round-trip passes
-  TC-CAP-04  Just-barely-too-small (583680 B)        -> create MUST fail
+  TC-CAP-03  Just-barely-fits container (794624 B)   -> full round-trip passes
+  TC-CAP-04  Just-barely-too-small (790528 B)        -> create MUST fail
   TC-CAP-05  Single PDF only, too-small container    -> create MUST fail
   TC-CAP-06  Single PDF only, adequate container     -> round-trip passes
-  TC-CAP-07  Container created with PDF only, then DOCX added (overflow on add)
+  TC-CAP-07  Container created with PDF only, then second PDF added (overflow on add)
              -> 'scef add' MUST fail with non-zero exit code
   TC-CAP-08  300 KB container create failure must not leave a corrupt container
              that silently passes 'scef list'
@@ -68,28 +68,27 @@ from conftest import (
 # Paths to the real source files (absolute, as required by the project style)
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent.parent
-_DOCS_OFFICIAL = _PROJECT_ROOT / "docs" / "official"
+_TEST_DATA = pathlib.Path(__file__).resolve().parent / "test_data"
 
-PDF_PATH  = _DOCS_OFFICIAL / "Task_VKR_final.pdf"
-DOCX_PATH = _DOCS_OFFICIAL / "vkr_final.docx"
+PDF_PATH  = _TEST_DATA / "pdf_c.pdf"
+DOCX_PATH = _TEST_DATA / "84c414e6-f467-4ded-976d-da6fbb196da2.pdf"
 
-PDF_SIZE  = 199219   # bytes on disk
-DOCX_SIZE = 108981   # bytes on disk
+PDF_SIZE  = 448509   # bytes on disk
+DOCX_SIZE = 63726    # bytes on disk
 
 
 # ---------------------------------------------------------------------------
 # Layout constants (must mirror Header.h / FileManager.h)
 # ---------------------------------------------------------------------------
 
-HEADER_SIZE           = 4096
+HEADER_SIZE            = 4096
 DEFAULT_MAX_TABLE_SIZE = 65536    # one BLOCK_SIZE worth of file-table space
-BLOCK_SIZE            = 65536
-NONCE_SIZE            = 12
-AUTH_TAG_SIZE         = 16
-ENCRYPTED_BLOCK_SIZE  = BLOCK_SIZE + NONCE_SIZE + AUTH_TAG_SIZE  # 65564
-SLOT_RESERVED         = HEADER_SIZE + DEFAULT_MAX_TABLE_SIZE     # 69632
-MINIMAL_CONTAINER_SIZE = 4 * SLOT_RESERVED                       # 278528
+BLOCK_SIZE             = 65536
+NONCE_SIZE             = 12
+AUTH_TAG_SIZE          = 16
+ENCRYPTED_BLOCK_SIZE   = BLOCK_SIZE + NONCE_SIZE + AUTH_TAG_SIZE  # 65564
+SLOT_RESERVED          = HEADER_SIZE + DEFAULT_MAX_TABLE_SIZE     # 69632
+MINIMAL_CONTAINER_SIZE = 4 * SLOT_RESERVED                        # 278528
 
 
 # ---------------------------------------------------------------------------
@@ -128,16 +127,18 @@ def _encrypted_size(plain_bytes: int) -> int:
     return size
 
 
-# Pre-computed constants used in every test.  Values are confirmed by the
-# capacity calculations in the module docstring.
-PDF_ENC_SIZE  = _encrypted_size(PDF_SIZE)    # 199331
-DOCX_ENC_SIZE = _encrypted_size(DOCX_SIZE)   # 109037
-BOTH_ENC_SIZE = PDF_ENC_SIZE + DOCX_ENC_SIZE # 308368
+# Pre-computed constants used in every test.
+#   pdf_c.pdf:                        448509 B raw -> 448705 B encrypted
+#   84c414e6-...-da2.pdf:              63726 B raw ->  63754 B encrypted
+#   Both together:                    512235 B raw -> 512459 B encrypted
+PDF_ENC_SIZE  = _encrypted_size(PDF_SIZE)    # 448705
+DOCX_ENC_SIZE = _encrypted_size(DOCX_SIZE)  # 63754
+BOTH_ENC_SIZE = PDF_ENC_SIZE + DOCX_ENC_SIZE # 512459
 
 # Container sizes for each test scenario (see module docstring for derivation).
-CONTAINER_FAR_TOO_SMALL      = 300000   # capacity  21472 — far too small
-CONTAINER_ONE_BLOCK_TOO_SMALL = 583680  # capacity 305152 — 3216 B short
-CONTAINER_JUST_FITS           = 587776  # capacity 309248 — 880 B surplus
+CONTAINER_FAR_TOO_SMALL       = 300000   # capacity  21472 — far too small
+CONTAINER_ONE_BLOCK_TOO_SMALL = 790528   # capacity 512000 — 459 B short
+CONTAINER_JUST_FITS           = 794624   # capacity 516096 — 3637 B surplus
 CONTAINER_GOOD_SIZE           = 8 * 1024 * 1024  # capacity ~8 MB, plenty
 
 
@@ -160,11 +161,11 @@ def _verify_source_files_and_constants() -> None:
     actual_pdf_size  = PDF_PATH.stat().st_size
     actual_docx_size = DOCX_PATH.stat().st_size
     assert actual_pdf_size == PDF_SIZE, (
-        f"Task_VKR_final.pdf size changed: expected {PDF_SIZE}, "
+        f"pdf_c.pdf size changed: expected {PDF_SIZE}, "
         f"got {actual_pdf_size}.  Update PDF_SIZE in this file."
     )
     assert actual_docx_size == DOCX_SIZE, (
-        f"vkr_final.docx size changed: expected {DOCX_SIZE}, "
+        f"84c414e6-f467-4ded-976d-da6fbb196da2.pdf size changed: expected {DOCX_SIZE}, "
         f"got {actual_docx_size}.  Update DOCX_SIZE in this file."
     )
 
@@ -222,14 +223,14 @@ def _assert_files_byte_equal(original: pathlib.Path, extracted: pathlib.Path) ->
 # ---------------------------------------------------------------------------
 
 class TestCreateOverflowFarTooSmall:
-    """TC-CAP-01: 300 KB container, two files totaling ~308 KB — must fail."""
+    """TC-CAP-01: 300 KB container, two files totaling ~512 KB — must fail."""
 
     def test_create_fails_when_files_exceed_capacity(self, tmp_path):
         """
-        Creating a container with -s 300000 and adding both PDF (199219 B) and
-        DOCX (108981 B) must fail.
+        Creating a container with -s 300000 and adding both pdf_c.pdf (448509 B) and
+        84c414e6-...-da2.pdf (63726 B) must fail.
 
-        The total encrypted size (308368 B) exceeds the container's data
+        The total encrypted size (512459 B) exceeds the container's data
         capacity (21472 B).  The implementation must detect this before or
         during the write phase and exit with a non-zero return code.
 
@@ -337,11 +338,11 @@ class TestRoundtripGoodSize:
         )
 
         list_result = list_container(cdir)
-        assert "Task_VKR_final.pdf" in list_result.stdout, (
-            "'scef list' output does not mention 'Task_VKR_final.pdf'"
+        assert "pdf_c.pdf" in list_result.stdout, (
+            "'scef list' output does not mention 'pdf_c.pdf'"
         )
-        assert "vkr_final.docx" in list_result.stdout, (
-            "'scef list' output does not mention 'vkr_final.docx'"
+        assert "84c414e6-f467-4ded-976d-da6fbb196da2.pdf" in list_result.stdout, (
+            "'scef list' output does not mention '84c414e6-f467-4ded-976d-da6fbb196da2.pdf'"
         )
 
     def test_extract_pdf_is_byte_perfect(self, tmp_path):
@@ -362,12 +363,12 @@ class TestRoundtripGoodSize:
             expect_success=True,
         )
 
-        extract_files(cdir, outdir, files=["Task_VKR_final.pdf"])
+        extract_files(cdir, outdir, files=["pdf_c.pdf"])
 
-        _assert_files_byte_equal(PDF_PATH, outdir / "Task_VKR_final.pdf")
+        _assert_files_byte_equal(PDF_PATH, outdir / "pdf_c.pdf")
 
     def test_extract_docx_is_byte_perfect(self, tmp_path):
-        """Extracted DOCX must be byte-for-byte identical to the original."""
+        """Extracted second PDF must be byte-for-byte identical to the original."""
         cdir = tmp_path / "c"
         cdir.mkdir()
         outdir = tmp_path / "out"
@@ -384,9 +385,9 @@ class TestRoundtripGoodSize:
             expect_success=True,
         )
 
-        extract_files(cdir, outdir, files=["vkr_final.docx"])
+        extract_files(cdir, outdir, files=["84c414e6-f467-4ded-976d-da6fbb196da2.pdf"])
 
-        _assert_files_byte_equal(DOCX_PATH, outdir / "vkr_final.docx")
+        _assert_files_byte_equal(DOCX_PATH, outdir / "84c414e6-f467-4ded-976d-da6fbb196da2.pdf")
 
     def test_extract_all_files_byte_perfect(self, tmp_path):
         """Extracting all files at once: both must be byte-perfect."""
@@ -408,15 +409,15 @@ class TestRoundtripGoodSize:
 
         extract_files(cdir, outdir)  # extract all
 
-        _assert_files_byte_equal(PDF_PATH,  outdir / "Task_VKR_final.pdf")
-        _assert_files_byte_equal(DOCX_PATH, outdir / "vkr_final.docx")
+        _assert_files_byte_equal(PDF_PATH,  outdir / "pdf_c.pdf")
+        _assert_files_byte_equal(DOCX_PATH, outdir / "84c414e6-f467-4ded-976d-da6fbb196da2.pdf")
 
 
 # ---------------------------------------------------------------------------
 # TC-CAP-03
-# Just-barely-fits container (587776 B) — full round-trip must succeed.
+# Just-barely-fits container (794624 B) — full round-trip must succeed.
 #
-# This is a boundary test: the container has only 880 bytes of headroom beyond
+# This is a boundary test: the container has only 3637 bytes of headroom beyond
 # what the two encrypted files need.  A correct implementation must handle
 # this without overflow.
 # ---------------------------------------------------------------------------
@@ -426,7 +427,7 @@ class TestRoundtripJustFits:
 
     def test_create_succeeds_at_minimum_fitting_size(self, tmp_path):
         """
-        'scef create' with container size = 587776 (880 B surplus after both
+        'scef create' with container size = 794624 (3637 B surplus after both
         files) must exit 0.
         """
         cdir = tmp_path / "c"
@@ -474,15 +475,15 @@ class TestRoundtripJustFits:
 
         extract_files(cdir, outdir)
 
-        _assert_files_byte_equal(PDF_PATH,  outdir / "Task_VKR_final.pdf")
-        _assert_files_byte_equal(DOCX_PATH, outdir / "vkr_final.docx")
+        _assert_files_byte_equal(PDF_PATH,  outdir / "pdf_c.pdf")
+        _assert_files_byte_equal(DOCX_PATH, outdir / "84c414e6-f467-4ded-976d-da6fbb196da2.pdf")
 
 
 # ---------------------------------------------------------------------------
 # TC-CAP-04
-# Just-barely-too-small container (583680 B) — create must fail.
+# Just-barely-too-small container (790528 B) — create must fail.
 #
-# This container has 3216 B less capacity than the two encrypted files need.
+# This container has 459 B less capacity than the two encrypted files need.
 # It is exactly 4096 B (one alignment unit) below the minimum fitting size.
 # ---------------------------------------------------------------------------
 
@@ -491,11 +492,11 @@ class TestCreateOverflowJustTooSmall:
 
     def test_create_fails_when_4096_bytes_short(self, tmp_path):
         """
-        'scef create -s 583680' with both real files must exit non-zero.
+        'scef create -s 790528' with both real files must exit non-zero.
 
-        Container data capacity: 305152 B.
-        Encrypted data required: 308368 B.
-        Deficit: 3216 B.
+        Container data capacity: 512000 B.
+        Encrypted data required: 512459 B.
+        Deficit: 459 B.
 
         This test is expected to FAIL against the current (buggy) code.
         """
@@ -540,7 +541,7 @@ class TestCreateOverflowSingleFile:
         """
         The structural minimum (278528 B) has zero data capacity (all bytes
         consumed by four slot-reserved areas).  Creating a container of
-        exactly 278528 B with the 199219 B PDF must therefore fail.
+        exactly 278528 B with the 448509 B PDF must therefore fail.
 
         This test is expected to FAIL against the current (buggy) code.
         """
@@ -574,11 +575,11 @@ class TestCreateOverflowSingleFile:
 #
 # Establishes that a single large file round-trips correctly when the
 # container is large enough.  Smallest size that fits the PDF alone is
-# 479232 B (capacity 200704 B >= 199331 B needed).
+# 729088 B (capacity 450560 B >= 448705 B needed).
 # ---------------------------------------------------------------------------
 
-# Smallest container that fits the PDF alone.
-_PDF_ONLY_MIN_SIZE = 479232   # capacity 200704 >= pdf_enc 199331
+# Smallest container (4096-aligned) that fits the PDF alone.
+_PDF_ONLY_MIN_SIZE = 729088   # capacity 450560 >= pdf_enc 448705
 
 
 class TestRoundtripSingleLargeFile:
@@ -622,19 +623,19 @@ class TestRoundtripSingleLargeFile:
             expect_success=True,
         )
 
-        extract_files(cdir, outdir, files=["Task_VKR_final.pdf"])
+        extract_files(cdir, outdir, files=["pdf_c.pdf"])
 
-        _assert_files_byte_equal(PDF_PATH, outdir / "Task_VKR_final.pdf")
+        _assert_files_byte_equal(PDF_PATH, outdir / "pdf_c.pdf")
 
 
 # ---------------------------------------------------------------------------
 # TC-CAP-07
-# Overflow on 'scef add': container was created with the PDF only, then DOCX
-# is added — but there is no room left.
+# Overflow on 'scef add': container was created with the PDF only, then the
+# second PDF is added — but there is no room left.
 #
-# Uses _PDF_ONLY_MIN_SIZE so the PDF fits with only a small surplus.  The
-# surplus (200704 - 199331 = 1373 B) is not enough for the encrypted DOCX
-# (109037 B), so 'scef add' must reject the operation.
+# Uses _PDF_ONLY_MIN_SIZE so the first PDF fits with only a small surplus.
+# The surplus (450560 - 448705 = 1855 B) is not enough for the encrypted
+# second PDF (63754 B), so 'scef add' must reject the operation.
 # ---------------------------------------------------------------------------
 
 class TestAddOverflow:
@@ -642,9 +643,10 @@ class TestAddOverflow:
 
     def test_add_fails_when_container_is_full(self, tmp_path):
         """
-        1. Create a container just large enough for the PDF.
-        2. Try to 'scef add' the DOCX — this must fail because the encrypted
-           DOCX (109037 B) does not fit in the 1373 B of remaining space.
+        1. Create a container just large enough for the first PDF.
+        2. Try to 'scef add' the second PDF — this must fail because the
+           encrypted second PDF (63754 B) does not fit in the 1855 B of
+           remaining space.
 
         The failure must be detected at add time, not silently overwrite data
         and then cause authentication errors on extract.
@@ -654,7 +656,7 @@ class TestAddOverflow:
         cdir = tmp_path / "c"
         cdir.mkdir()
 
-        # Step 1: create with PDF only — this must succeed.
+        # Step 1: create with first PDF only — this must succeed.
         run_scef(
             [
                 "create",
@@ -665,7 +667,7 @@ class TestAddOverflow:
             expect_success=True,
         )
 
-        # Step 2: add DOCX — must fail (no room).
+        # Step 2: add second PDF — must fail (no room).
         result = run_scef(
             [
                 "add",
@@ -676,11 +678,11 @@ class TestAddOverflow:
         )
 
         assert result.returncode != 0, (
-            f"'scef add' of {DOCX_SIZE}-byte DOCX into a container with "
-            f"only ~1373 B of remaining space must fail.\n"
-            f"Remaining capacity after PDF: "
+            f"'scef add' of {DOCX_SIZE}-byte file into a container with "
+            f"only ~1855 B of remaining space must fail.\n"
+            f"Remaining capacity after first PDF: "
             f"{_data_capacity(_PDF_ONLY_MIN_SIZE) - PDF_ENC_SIZE} B, "
-            f"DOCX encrypted: {DOCX_ENC_SIZE} B.\n"
+            f"second PDF encrypted: {DOCX_ENC_SIZE} B.\n"
             f"Current behaviour (BUG): exits 0 and silently corrupts the container.\n"
             f"stderr: {result.stderr.strip()}"
         )
@@ -699,7 +701,7 @@ class TestAddOverflow:
         outdir = tmp_path / "out"
         outdir.mkdir()
 
-        # Create with PDF only.
+        # Create with first PDF only.
         run_scef(
             [
                 "create",
@@ -725,13 +727,13 @@ class TestAddOverflow:
         extract_result = extract_files(
             cdir,
             outdir,
-            files=["Task_VKR_final.pdf"],
+            files=["pdf_c.pdf"],
             expect_success=False,
         )
 
         if extract_result.returncode == 0:
             # Extract succeeded — verify the content is still correct.
-            _assert_files_byte_equal(PDF_PATH, outdir / "Task_VKR_final.pdf")
+            _assert_files_byte_equal(PDF_PATH, outdir / "pdf_c.pdf")
         else:
             # Extract failed entirely — this is the current bug: the container
             # was corrupted by the overflowing add.
@@ -768,7 +770,7 @@ class TestFailedCreateLeavesSafeState:
         cdir.mkdir()
 
         # Attempt the overflowing create.
-        create_result = run_scef(
+        run_scef(
             [
                 "create",
                 "-c", str(cdir),

@@ -16,6 +16,7 @@ struct DriveEntry {
 
 class DriveListModel : public QAbstractListModel {
     Q_OBJECT
+    Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
 
 public:
     enum Roles {
@@ -35,6 +36,9 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE QString pathAtRow(int row) const;
     Q_INVOKABLE bool hasContainerAtRow(int row) const;
+
+signals:
+    void countChanged();
 
 private:
     std::vector<DriveEntry> drives_;

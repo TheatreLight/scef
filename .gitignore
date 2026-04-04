@@ -16,6 +16,9 @@ CMakeLists.txt.user
 __pycache__/
 .pytest_cache/
 
+# Test data (large personal files, not tracked)
+tests/integration/test_data/
+
 # OS
 Thumbs.db
 .DS_Store

@@ -9,7 +9,6 @@
 DriveListModel::DriveListModel(QObject* parent)
     : QAbstractListModel(parent)
 {
-    refresh();
 }
 
 int DriveListModel::rowCount(const QModelIndex& parent) const
@@ -75,9 +74,10 @@ void DriveListModel::refresh()
 
 #ifdef _WIN32
     wchar_t driveStrings[512];
-    DWORD len = GetLogicalDriveStringsW(511, driveStrings);
+    DWORD len = GetLogicalDriveStringsW(512, driveStrings);
     if (len == 0) {
         endResetModel();
+        emit countChanged();
         return;
     }
 
@@ -129,4 +129,5 @@ void DriveListModel::refresh()
 #endif
 
     endResetModel();
+    emit countChanged();
 }

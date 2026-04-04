@@ -51,7 +51,7 @@ signals:
     void operationFinished(const QString& error);
 
 private:
-    void runAsync(std::function<void()> work, const QString& dir, std::string pwd);
+    void runAsync(std::unique_ptr<FileManager> fm, QString dir, std::string pwd);
     void refreshFileList();
     void scrubPassword();
 

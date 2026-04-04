@@ -39,7 +39,8 @@ Page {
 
         // Destination path display
         Label {
-            text: "Destination: " + initialDestDir
+            text: "Destination: " + decodeURIComponent(
+                initialDestDir.replace(/^file:\/\/\//, "").replace(/^file:\/\//, ""))
             font.pixelSize: 12
             opacity: 0.6
             visible: initialDestDir !== ""
@@ -307,9 +308,10 @@ Page {
         }
     }
 
-    // Handle async result
+    // Handle async result (only when this page is active)
     Connections {
         target: controller
+        enabled: StackView.status === StackView.Active
         function onOperationFinished(error) {
             if (error !== "") {
                 errorLabel.text = error
