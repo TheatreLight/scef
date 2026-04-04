@@ -6,7 +6,10 @@ import QtQuick.Dialogs
 import "utils.js" as Utils
 
 Page {
+    id: fileListPageRoot
     padding: 24
+    property string pendingOperation: ""  // "add" or "extract"
+    property string pendingMessage: ""
 
     property var selectedIndices: ({})
 
@@ -40,15 +43,13 @@ Page {
             }
             errorLabel.visible = false
             successLabel.visible = false
+            pendingOperation = "add"
+            pendingMessage = files.length + " file(s) added successfully"
             var error = controller.addFiles(files)
             if (error !== "") {
                 errorLabel.text = error
                 errorLabel.visible = true
-            } else {
-                selectedIndices = {}
-                selectedIndicesChanged()
-                successLabel.text = files.length + " file(s) added successfully"
-                successLabel.visible = true
+                pendingOperation = ""
             }
         }
     }
@@ -60,15 +61,15 @@ Page {
             errorLabel.visible = false
             successLabel.visible = false
             var names = getSelectedNames()
+            pendingOperation = "extract"
+            pendingMessage = names.length > 0
+                ? names.length + " file(s) extracted successfully"
+                : "All files extracted successfully"
             var error = controller.extractFiles(names, selectedFolder)
             if (error !== "") {
                 errorLabel.text = error
                 errorLabel.visible = true
-            } else {
-                successLabel.text = names.length > 0
-                    ? names.length + " file(s) extracted successfully"
-                    : "All files extracted successfully"
-                successLabel.visible = true
+                pendingOperation = ""
             }
         }
     }
@@ -223,6 +224,7 @@ Page {
 
             Button {
                 text: "Add Files"
+                enabled: !controller.busy
                 onClicked: {
                     successLabel.visible = false
                     errorLabel.visible = false
@@ -234,6 +236,7 @@ Page {
                 text: getSelectedCount() > 0
                       ? "Extract Selected (" + getSelectedCount() + ")"
                       : "Extract All"
+                enabled: !controller.busy
                 onClicked: {
                     successLabel.visible = false
                     errorLabel.visible = false
@@ -245,11 +248,59 @@ Page {
 
             Button {
                 text: "Back"
+                enabled: !controller.busy
                 onClicked: {
                     controller.closeContainer()
                     stackView.pop(null)
                 }
             }
+        }
+    }
+
+    // Busy overlay
+    Rectangle {
+        anchors.fill: parent
+        color: "#80000000"
+        visible: controller.busy
+        z: 10
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 16
+
+            BusyIndicator {
+                running: controller.busy
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Label {
+                text: pendingOperation === "add" ? "Adding files..."
+                    : pendingOperation === "extract" ? "Extracting files..."
+                    : "Processing..."
+                font.pixelSize: 16
+                Layout.alignment: Qt.AlignHCenter
+            }
+        }
+    }
+
+    // Handle async result
+    Connections {
+        target: controller
+        enabled: fileListPageRoot.StackView.status === StackView.Active
+        function onOperationFinished(error) {
+            if (error !== "") {
+                errorLabel.text = error
+                errorLabel.visible = true
+            } else {
+                if (pendingOperation === "add") {
+                    selectedIndices = {}
+                    selectedIndicesChanged()
+                }
+                successLabel.text = pendingMessage
+                successLabel.visible = true
+            }
+            pendingOperation = ""
+            pendingMessage = ""
         }
     }
 }

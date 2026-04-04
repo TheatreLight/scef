@@ -51,7 +51,12 @@ signals:
     void operationFinished(const QString& error);
 
 private:
-    void runAsync(std::unique_ptr<FileManager> fm, QString dir, std::string pwd);
+    // Run heavy FileManager work on a background thread.
+    // workFn: called on worker thread with the FileManager pointer.
+    // onSuccess: called on main thread if work succeeded (fm is alive).
+    void runAsync(std::unique_ptr<FileManager> fm,
+                  std::function<void(FileManager*)> workFn,
+                  std::function<void()> onSuccess);
     void refreshFileList();
     void scrubPassword();
 

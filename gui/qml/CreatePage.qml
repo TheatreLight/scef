@@ -5,6 +5,7 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 
 Page {
+    id: createPageRoot
     padding: 24
     property bool sizeError: false
     property string initialDestDir: ""
@@ -311,7 +312,7 @@ Page {
     // Handle async result (only when this page is active)
     Connections {
         target: controller
-        enabled: StackView.status === StackView.Active
+        enabled: createPageRoot.StackView.status === StackView.Active
         function onOperationFinished(error) {
             if (error !== "") {
                 errorLabel.text = error
