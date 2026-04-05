@@ -10,6 +10,15 @@ Page {
     property bool sizeError: false
     property string initialDestDir: ""
 
+    // KDF profile definitions: [label, description, m_mib, t, p]
+    // Index corresponds to kdfProfileIndex passed to controller (0=Standard, 1=Fast, 2=High, 3=Browser, 4=Custom)
+    readonly property var kdfProfiles: [
+        { label: "Standard (recommended)", desc: "Balanced security and speed (64 MiB, ~1s)",  m: 64,  t: 3, p: 4 },
+        { label: "Fast Access",            desc: "Minimal delay, lower security (19 MiB)",      m: 19,  t: 2, p: 1 },
+        { label: "High Security",          desc: "Maximum native protection (256 MiB, ~6s)",    m: 256, t: 5, p: 8 },
+        { label: "Browser",                desc: "Optimized for browser decryption (46 MiB)",   m: 46,  t: 1, p: 1 }
+    ]
+
     FileDialog {
         id: filePickerDialog
         title: "Select files to encrypt"
@@ -135,8 +144,12 @@ Page {
             title: "Container Settings"
             Layout.fillWidth: true
 
-            GridLayout {
+            ColumnLayout {
                 width: parent.width
+                spacing: 8
+
+            GridLayout {
+                Layout.fillWidth: true
                 columns: 3
                 columnSpacing: 16
                 rowSpacing: 8
@@ -189,7 +202,124 @@ Page {
                     Layout.preferredWidth: 18
                     opacity: sizeError ? 1 : 0
                 }
+
+                Label { text: "Security Profile:" }
+                ComboBox {
+                    id: kdfProfileCombo
+                    Layout.fillWidth: true
+                    model: {
+                        var items = []
+                        for (var i = 0; i < createPageRoot.kdfProfiles.length; i++)
+                            items.push(createPageRoot.kdfProfiles[i].label)
+                        items.push("Custom")
+                        return items
+                    }
+                    currentIndex: 0
+
+                    onCurrentIndexChanged: {
+                        // When a named profile is selected, sync the advanced spinboxes
+                        if (currentIndex < createPageRoot.kdfProfiles.length) {
+                            var prof = createPageRoot.kdfProfiles[currentIndex]
+                            kdfMemSpin.value = prof.m
+                            kdfIterSpin.value = prof.t
+                            kdfParallelSpin.value = prof.p
+                        }
+                    }
+                }
+                Item { Layout.preferredWidth: 18 }
+
+                // Profile description — spans all 3 columns
+                Item {}
+                Label {
+                    id: kdfDescLabel
+                    Layout.fillWidth: true
+                    Layout.columnSpan: 2
+                    font.pixelSize: 11
+                    opacity: 0.6
+                    wrapMode: Text.WordWrap
+                    text: kdfProfileCombo.currentIndex < createPageRoot.kdfProfiles.length
+                          ? createPageRoot.kdfProfiles[kdfProfileCombo.currentIndex].desc
+                          : "Custom Argon2id parameters"
+                }
+
+                // Advanced toggle — spans all 3 columns
+                Item {}
+                Label {
+                    id: advancedToggle
+                    Layout.fillWidth: true
+                    Layout.columnSpan: 2
+                    text: (advancedSection.visible ? "\u25BC" : "\u25B6") + "  Advanced KDF Settings"
+                    font.pixelSize: 12
+                    color: Material.color(Material.Amber)
+                    opacity: 0.85
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: advancedSection.visible = !advancedSection.visible
+                    }
+                }
             }
+
+            // Collapsible advanced KDF section
+            ColumnLayout {
+                id: advancedSection
+                Layout.fillWidth: true
+                spacing: 8
+                visible: false
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Material.color(Material.Grey)
+                    opacity: 0.3
+                }
+
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 3
+                    columnSpacing: 16
+                    rowSpacing: 8
+
+                    Label { text: "Memory (MiB):" }
+                    SpinBox {
+                        id: kdfMemSpin
+                        Layout.fillWidth: true
+                        from: 8
+                        to: 4096
+                        value: 64
+                        editable: true
+                        onValueModified: kdfProfileCombo.currentIndex = createPageRoot.kdfProfiles.length  // Custom
+                    }
+                    Item { Layout.preferredWidth: 18 }
+
+                    Label { text: "Iterations:" }
+                    SpinBox {
+                        id: kdfIterSpin
+                        Layout.fillWidth: true
+                        from: 1
+                        to: 100
+                        value: 3
+                        editable: true
+                        onValueModified: kdfProfileCombo.currentIndex = createPageRoot.kdfProfiles.length  // Custom
+                    }
+                    Item { Layout.preferredWidth: 18 }
+
+                    Label { text: "Parallelism:" }
+                    SpinBox {
+                        id: kdfParallelSpin
+                        Layout.fillWidth: true
+                        from: 1
+                        to: 64
+                        value: 4
+                        editable: true
+                        onValueModified: kdfProfileCombo.currentIndex = createPageRoot.kdfProfiles.length  // Custom
+                    }
+                    Item { Layout.preferredWidth: 18 }
+                }
+            }
+
+            } // ColumnLayout (GroupBox wrapper)
         }
 
         // Validation errors
@@ -225,7 +355,11 @@ Page {
                         initialDestDir,
                         files,
                         passwordField.text,
-                        sizeSpin.value
+                        sizeSpin.value,
+                        kdfProfileCombo.currentIndex,
+                        kdfMemSpin.value,
+                        kdfIterSpin.value,
+                        kdfParallelSpin.value
                     )
 
                     // Synchronous error (e.g. size validation)

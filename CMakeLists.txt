@@ -64,6 +64,7 @@ add_library(scef_lib STATIC
     src/CryptoManager.cpp
     src/FileManager.cpp
     src/FileTable.cpp
+    src/KdfProfiles.cpp
 )
 
 target_include_directories(scef_lib PUBLIC

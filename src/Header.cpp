@@ -249,6 +249,22 @@ void Header::incrementHeaderVersion() {
     header_version_++;
 }
 
+void Header::setKdfProfile(EKDFProfile profile) {
+    kdf_profile_ = profile;
+}
+
+void Header::setKdfMKib(uint32_t m_kib) {
+    kdf_m_kib_ = m_kib;
+}
+
+void Header::setKdfT(uint32_t t) {
+    kdf_t_ = t;
+}
+
+void Header::setKdfP(uint32_t p) {
+    kdf_p_ = p;
+}
+
 void Header::write_le16(uint8_t* buf, uint16_t value) {
     buf[0] = static_cast<uint8_t>(value);
     buf[1] = static_cast<uint8_t>(value >> 8);

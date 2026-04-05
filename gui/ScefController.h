@@ -27,7 +27,11 @@ public:
     Q_INVOKABLE QString createContainer(const QString& destDir,
                                          const QStringList& files,
                                          const QString& password,
-                                         quint64 sizeMB);
+                                         quint64 sizeMB,
+                                         int kdfProfileIndex = 0,
+                                         int kdfM_MiB = 64,
+                                         int kdfT = 3,
+                                         int kdfP = 4);
 
     Q_INVOKABLE QString openContainer(const QString& containerPath,
                                        const QString& password);

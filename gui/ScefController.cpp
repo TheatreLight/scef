@@ -1,5 +1,6 @@
 #include "ScefController.h"
 #include "FileManager.h"
+#include "KdfProfiles.h"
 
 #include <QFileInfo>
 #include <QUrl>
@@ -44,7 +45,11 @@ ScefController::~ScefController()
 QString ScefController::createContainer(const QString& destDir,
                                          const QStringList& files,
                                          const QString& password,
-                                         quint64 sizeMB)
+                                         quint64 sizeMB,
+                                         int kdfProfileIndex,
+                                         int kdfM_MiB,
+                                         int kdfT,
+                                         int kdfP)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
@@ -53,11 +58,32 @@ QString ScefController::createContainer(const QString& destDir,
     auto pwd = password.toStdString();
     uint64_t sizeBytes = sizeMB * 1024ULL * 1024ULL;
 
+    // Map profile index (0–3 = named profiles, 4 = custom) to EKDFProfile.
+    EKDFProfile profile;
+    switch (kdfProfileIndex) {
+        case 1:  profile = EKDFProfile::FastAccess;   break;
+        case 2:  profile = EKDFProfile::HighSecurity; break;
+        case 3:  profile = EKDFProfile::Browser;      break;
+        case 4:  profile = EKDFProfile::None;         break;
+        default: profile = EKDFProfile::Standard;     break;  // index 0 = Standard
+    }
+
     // Pre-validate synchronously (init checks size before creating file)
     try {
         fileManager_ = std::make_unique<FileManager>();
         fileManager_->init(paths, dir, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
                            /*create_new=*/true, pwd);
+
+        if (profile != EKDFProfile::None) {
+            const KdfProfileParams* p = getProfileParams(profile);
+            if (p)
+                fileManager_->setKdfParams(profile, p->m_kib, p->t, p->p);
+        } else {
+            fileManager_->setKdfParams(EKDFProfile::None,
+                                       static_cast<uint32_t>(kdfM_MiB) * 1024u,
+                                       static_cast<uint32_t>(kdfT),
+                                       static_cast<uint32_t>(kdfP));
+        }
     } catch (const std::exception& e) {
         fileManager_.reset();
         return QString::fromUtf8(e.what());

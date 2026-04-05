@@ -538,30 +538,12 @@ TEST(EnumSpecTest, KuznechikGCM_EnumValueExists) {
            "ECipher enum should have this value.";
 }
 
-TEST(EnumSpecTest, KDFProfiles_AllFiveDefined) {
-    EKDFProfile profiles[] = {
-        static_cast<EKDFProfile>(0x0001), // FastAccess
-        static_cast<EKDFProfile>(0x0002), // Standard
-        static_cast<EKDFProfile>(0x0003), // HighSecurity
-        static_cast<EKDFProfile>(0x0004), // Archive
-        static_cast<EKDFProfile>(0x0005), // Browser
-    };
-
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_EQ(static_cast<uint16_t>(profiles[i]), static_cast<uint16_t>(i + 1));
-    }
-
-    // NOTE: This test passes even without named enumerators because we cast.
-    // A stricter test would be:
-    //   EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::FastAccess), 1);
-    // which would fail to compile if FastAccess is not defined.
-    // Uncomment the following to enforce named enumerators:
-    //
-    // EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::FastAccess),   1);
-    // EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Standard),     2);
-    // EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::HighSecurity), 3);
-    // EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Archive),      4);
-    // EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Browser),      5);
+TEST(EnumSpecTest, KDFProfiles_AllFourDefined) {
+    // Spec: 4 predefined profiles at values 1-4; no gap.
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::FastAccess),   1u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Standard),     2u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::HighSecurity), 3u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Browser),      4u);
 }
 
 // ===========================================================================

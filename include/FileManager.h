@@ -4,6 +4,7 @@
 #include "CryptoManager.h"
 #include "Header.h"
 #include "FileTable.h"
+#include "KdfProfiles.h"
 
 #include <array>
 #include <fstream>
@@ -45,6 +46,12 @@ public:
               uint64_t container_size = 0, uint32_t max_table_size = DEFAULT_MAX_TABLE_SIZE,
               bool create_new = false,
               const std::string& password = "");
+    // Configure KDF parameters for container creation.
+    // Must be called BEFORE write() when creating a new container.
+    //   profile != None  → look up params from the profile table (m_kib/t/p are ignored).
+    //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
+    void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
+
     void readMeta();
     void extract(const std::string& pathToOutputFolder);
     void write();

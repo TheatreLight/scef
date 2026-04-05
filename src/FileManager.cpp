@@ -1,5 +1,6 @@
 #include "FileManager.h"
 #include "Header.h"
+#include "KdfProfiles.h"
 
 #include "botan/mem_ops.h"
 #include "botan/secmem.h"
@@ -148,6 +149,26 @@ void FileManager::readFragmented(char* buf, size_t size) {
     }
 }
 
+// ---- KDF configuration ----
+
+void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p) {
+    if (profile != EKDFProfile::None) {
+        const KdfProfileParams* params = getProfileParams(profile);
+        if (!params) {
+            throw std::runtime_error("setKdfParams: unrecognized KDF profile");
+        }
+        header_->setKdfProfile(profile);
+        header_->setKdfMKib(params->m_kib);
+        header_->setKdfT(params->t);
+        header_->setKdfP(params->p);
+    } else {
+        header_->setKdfProfile(EKDFProfile::None);
+        header_->setKdfMKib(m_kib);
+        header_->setKdfT(t);
+        header_->setKdfP(p);
+    }
+}
+
 // ---- crypto helpers ----
 
 void FileManager::initCryptoForCreate() {
@@ -177,7 +198,7 @@ void FileManager::initCryptoForRead() {
     uint32_t mKib = header_->getKdfMKib();
     uint32_t t     = header_->getKdfT();
     uint32_t p     = header_->getKdfP();
-    if (mKib < 8 || mKib > 1048576 || t < 1 || t > 100 || p < 1 || p > 64) {
+    if (mKib < KDF_M_KIB_MIN || mKib > KDF_M_KIB_MAX || t < KDF_T_MIN || t > KDF_T_MAX || p < KDF_P_MIN || p > KDF_P_MAX) {
         throw std::runtime_error("Header KDF parameters out of acceptable range");
     }
 
