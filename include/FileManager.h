@@ -124,10 +124,16 @@ private:
     // Updates the header with the salt, dek_nonce, encrypted_dek, and dek_auth_tag.
     void initCryptoForCreate();
 
-    // Initialize crypto for an existing container (read header, derive KEK, unwrap DEK).
-    // Must be called after readHeader().
-    // Throws std::runtime_error on wrong password or corrupt header.
-    void initCryptoForRead();
+    // Validate KDF parameters from the current header and derive the KEK from
+    // password_ + header salt.  Zeros password_ after use.
+    // Must be called once per open, before any per-slot unwrapDek calls.
+    // Throws std::runtime_error if KDF params are out of range or Argon2id fails.
+    void validateKdfParamsAndDeriveKek();
+
+    // Unwrap (decrypt) the DEK from the current header using the already-derived KEK.
+    // Must be called after validateKdfParamsAndDeriveKek().
+    // Throws std::runtime_error on wrong password or corrupt DEK.
+    void unwrapDekFromHeader();
 
     // Compute and store header HMAC. Call after all header fields are set and
     // crypto is ready.

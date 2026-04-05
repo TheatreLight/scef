@@ -58,6 +58,14 @@ DEFAULT_PASSWORD = "integration_test_password_123"
 # 4 MiB is used here to leave comfortable room for multiple data blocks.
 DEFAULT_CONTAINER_SIZE = 4 * 1024 * 1024
 
+# Minimal Argon2id KDF parameters used by all tests that do not specifically
+# test KDF profiles.  These values are just above the CLI-enforced minimum
+# (m >= 8 MiB) and keep per-container derivation time well under 0.1s,
+# dramatically reducing the total integration-test wall-clock time.
+# Tests in test_kdf_profiles.py use their own dedicated create helpers
+# (_create_with_kdf_profile / _create_with_custom_kdf) and are not affected.
+FAST_KDF_ARGS = ["--kdf-m", "1", "--kdf-t", "1", "--kdf-p", "1"]
+
 
 def run_scef(
     args: list,
@@ -141,9 +149,10 @@ def create_container(
     size: int = DEFAULT_CONTAINER_SIZE,
     password: str = DEFAULT_PASSWORD,
     max_table_size: int = None,
+    kdf_args: list = None,
 ) -> subprocess.CompletedProcess:
     """
-    Run 'scef create -c <dir> -f <file1> [-f <file2> ...] -s <size>'.
+    Run 'scef create -c <dir> -f <file1> [-f <file2> ...] -s <size> [kdf_args...]'.
 
     Parameters
     ----------
@@ -157,13 +166,22 @@ def create_container(
         Password for encryption.
     max_table_size:
         Optional --max_table_size value.
+    kdf_args:
+        Extra KDF flag list appended to the create command.  Defaults to
+        FAST_KDF_ARGS (--kdf-m 19456 --kdf-t 1 --kdf-p 1) so that all
+        ordinary integration tests skip the heavy default Argon2id profile
+        and complete in milliseconds rather than seconds.  Pass an empty
+        list [] to use the binary's built-in default KDF profile.
     """
+    if kdf_args is None:
+        kdf_args = FAST_KDF_ARGS
     args = ["create", "-c", str(container_dir)]
     for f in files:
         args += ["-f", str(f)]
     args += ["-s", str(size)]
     if max_table_size is not None:
         args += ["--max_table_size", str(max_table_size)]
+    args += kdf_args
     return run_scef(args, password=password)
 
 

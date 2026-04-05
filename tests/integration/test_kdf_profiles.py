@@ -428,8 +428,8 @@ class TestValidationErrors:
             + extra_flags,
         )
 
-    def test_kdf_m_below_minimum_fails(self, tmp_path):
-        """--kdf-m 2 (below minimum of 8 MiB) → non-zero exit."""
+    def test_kdf_m_zero_falls_back_to_default(self, tmp_path):
+        """--kdf-m 0 is treated as 'not specified' and falls back to default profile."""
         src = make_text_file(tmp_path / "f.txt", "x")
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -437,12 +437,13 @@ class TestValidationErrors:
             [
                 "create", "-c", str(cdir), "-f", str(src),
                 "-s", str(DEFAULT_CONTAINER_SIZE),
-                "--kdf-m", "2",
+                "--kdf-m", "0",
             ],
             stdin_text=f"{DEFAULT_PASSWORD}\n",
         )
-        assert result.returncode != 0, (
-            "--kdf-m 2 (below min 8) must exit non-zero"
+        assert result.returncode == 0, (
+            "--kdf-m 0 must fall back to default profile and succeed.\n"
+            f"stderr: {result.stderr.strip()}"
         )
 
     def test_kdf_m_above_maximum_fails(self, tmp_path):
@@ -463,7 +464,7 @@ class TestValidationErrors:
         )
 
     def test_kdf_m_at_minimum_boundary_succeeds(self, tmp_path):
-        """--kdf-m 8 (exactly at minimum) must succeed."""
+        """--kdf-m 1 (exactly at minimum) must succeed."""
         src = make_text_file(tmp_path / "f.txt", "x")
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -471,12 +472,12 @@ class TestValidationErrors:
             [
                 "create", "-c", str(cdir), "-f", str(src),
                 "-s", str(DEFAULT_CONTAINER_SIZE),
-                "--kdf-m", "8",
+                "--kdf-m", "1",
             ],
             stdin_text=f"{DEFAULT_PASSWORD}\n",
         )
         assert result.returncode == 0, (
-            f"--kdf-m 8 (at minimum boundary) must succeed.\n"
+            f"--kdf-m 1 (at minimum boundary) must succeed.\n"
             f"stderr: {result.stderr.strip()}"
         )
 

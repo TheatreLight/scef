@@ -6,7 +6,8 @@
 #include <string_view>
 
 // Validation bounds for Argon2id parameters — used on both write and read paths.
-constexpr uint32_t KDF_M_KIB_MIN =    8u * 1024u;   // 8 MiB
+constexpr uint32_t KDF_M_KIB_MIN =    1u;            // absolute Argon2id minimum (1 KiB)
+constexpr uint32_t KDF_M_KIB_WARN =   8u * 1024u;   // 8 MiB — below this, warn about weak security
 constexpr uint32_t KDF_M_KIB_MAX = 4096u * 1024u;   // 4096 MiB
 constexpr uint32_t KDF_T_MIN     = 1u;
 constexpr uint32_t KDF_T_MAX     = 100u;

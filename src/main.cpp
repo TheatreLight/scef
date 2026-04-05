@@ -37,7 +37,7 @@ void print_help() {
               << "KDF options (create only):\n"
               << "  --kdf-profile <name>      Use a predefined KDF profile.\n"
               << "                            Names: fast, default, high, browser\n"
-              << "  --kdf-m <MiB>             Manual Argon2id memory in MiB (min 8, max 4096)\n"
+              << "  --kdf-m <MiB>             Manual Argon2id memory in MiB (min 1, max 4096; <8 warns)\n"
               << "  --kdf-t <n>               Manual Argon2id iterations (min 1, max 100)\n"
               << "  --kdf-p <n>               Manual Argon2id parallelism (min 1, max 64)\n"
               << "  Note: --kdf-profile and --kdf-m/t/p are mutually exclusive.\n"
@@ -163,8 +163,11 @@ static int resolveKdfParams(const ParsedArgs& args,
 
         // Validate ranges.
         if (out_m_kib < KDF_M_KIB_MIN || out_m_kib > KDF_M_KIB_MAX) {
-            std::cerr << "ERROR: --kdf-m must be between 8 and 4096 MiB\n";
+            std::cerr << "ERROR: --kdf-m must be between 1 and 4096 MiB\n";
             return EXIT_FAILURE;
+        }
+        if (out_m_kib < KDF_M_KIB_WARN) {
+            std::cerr << "WARNING: --kdf-m below 8 MiB provides weak security\n";
         }
         if (out_t < KDF_T_MIN || out_t > KDF_T_MAX) {
             std::cerr << "ERROR: --kdf-t must be between 1 and 100\n";
