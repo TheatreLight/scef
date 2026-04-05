@@ -57,6 +57,10 @@ public:
     void write();
     void add();
 
+    // Replace the file list without re-initializing the container.
+    // Used by the GUI to reuse an already-open FileManager for add/extract.
+    void setFilesList(const std::vector<std::string>& filesList) { filesList_ = filesList; }
+
     void printHeader() const;
     void printFilesTable() const;
 
@@ -140,7 +144,7 @@ private:
     void computeAndStoreHeaderHmac();
 
     // Verify header HMAC. Throws std::runtime_error if mismatch.
-    // Must be called after initCryptoForRead().
+    // Must be called after validateKdfParamsAndDeriveKek().
     void verifyHeaderHmac();
 
     void readHeader();

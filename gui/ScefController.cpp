@@ -110,45 +110,47 @@ QString ScefController::openContainer(const QString& containerPath,
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
-    try {
-        auto filePath = toLocalPath(containerPath);
-        QFileInfo fi(QString::fromStdString(filePath));
-        auto dir = fi.absolutePath().toStdString();
-        auto pwd = password.toStdString();
+    auto filePath = toLocalPath(containerPath);
+    QFileInfo fi(QString::fromStdString(filePath));
+    auto dir = fi.absolutePath().toStdString();
+    auto pwd = password.toStdString();
+    auto dirQ = fi.absolutePath();
 
-        fileManager_ = std::make_unique<FileManager>();
-        fileManager_->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                           /*create_new=*/false, pwd);
+    auto fm = std::make_unique<FileManager>();
 
-        scrubPassword();
-        currentPassword_ = std::move(pwd);
-        currentContainerDir_ = fi.absolutePath();
-        containerOpen_ = true;
-        emit containerOpenChanged();
+    // Explicit copy for the worker lambda — C++ does not guarantee argument
+    // evaluation order, so capturing pwd by copy in one lambda and by move
+    // in another (both as function arguments) is undefined behavior.
+    auto pwdForWorker = pwd;
 
-        refreshFileList();
-        return {};
-    } catch (const std::exception& e) {
-        fileManager_.reset();
-        return QString::fromUtf8(e.what());
-    }
+    runAsync(std::move(fm),
+        [dir, pwdForWorker](FileManager* f) {
+            f->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
+                    /*create_new=*/false, pwdForWorker);
+        },
+        [this, dirQ, pwd = std::move(pwd)]() mutable {
+            scrubPassword();
+            currentPassword_ = std::move(pwd);
+            currentContainerDir_ = dirQ;
+            containerOpen_ = true;
+            emit containerOpenChanged();
+            refreshFileList();
+        });
+
+    return {};
 }
 
 QString ScefController::addFiles(const QStringList& filePaths)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
+    if (!fileManager_) return QStringLiteral("No container is open");
 
-    // Each operation creates a fresh FileManager that re-reads current container
-    // state from disk, ensuring we always operate on the latest on-disk data.
     try {
         auto paths = toStdPaths(filePaths);
-        auto dir = currentContainerDir_.toStdString();
+        fileManager_->setFilesList(paths);
 
-        auto fm = std::make_unique<FileManager>();
-        fm->init(paths, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                 /*create_new=*/false, currentPassword_);
-
-        runAsync(std::move(fm),
+        // Transfer ownership to the async worker; it returns via onSuccess.
+        runAsync(std::move(fileManager_),
             [](FileManager* f) { f->add(); },
             [this]() { refreshFileList(); });
 
@@ -162,6 +164,7 @@ QString ScefController::extractFiles(const QStringList& fileNames,
                                       const QString& outputDir)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
+    if (!fileManager_) return QStringLiteral("No container is open");
 
     try {
         std::vector<std::string> names;
@@ -169,14 +172,10 @@ QString ScefController::extractFiles(const QStringList& fileNames,
         for (const auto& n : fileNames)
             names.push_back(n.toStdString());
 
-        auto dir = currentContainerDir_.toStdString();
         auto outDir = toLocalPath(outputDir);
+        fileManager_->setFilesList(names);
 
-        auto fm = std::make_unique<FileManager>();
-        fm->init(names, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                 /*create_new=*/false, currentPassword_);
-
-        runAsync(std::move(fm),
+        runAsync(std::move(fileManager_),
             [outDir](FileManager* f) { f->extract(outDir); },
             []() {});
 
