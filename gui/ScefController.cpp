@@ -2,7 +2,9 @@
 #include "FileManager.h"
 #include "KdfProfiles.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
+#include <QPointer>
 #include <QUrl>
 
 #include <botan/mem_ops.h>
@@ -124,9 +126,11 @@ QString ScefController::openContainer(const QString& containerPath,
     auto pwdForWorker = pwd;
 
     runAsync(std::move(fm),
-        [dir, pwdForWorker](FileManager* f) {
+        [dir, pwdForWorker = std::move(pwdForWorker)](FileManager* f) mutable {
             f->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
                     /*create_new=*/false, pwdForWorker);
+            Botan::secure_scrub_memory(pwdForWorker.data(), pwdForWorker.size());
+            pwdForWorker.clear();
         },
         [this, dirQ, pwd = std::move(pwd)]() mutable {
             scrubPassword();
@@ -187,6 +191,7 @@ QString ScefController::extractFiles(const QStringList& fileNames,
 
 void ScefController::closeContainer()
 {
+    if (busy_) return;
     fileManager_.reset();
     fileListModel_->clear();
     scrubPassword();
@@ -229,7 +234,8 @@ void ScefController::runAsync(std::unique_ptr<FileManager> fm,
 
     // Transfer FileManager ownership to the worker thread to avoid race conditions.
     auto* fmRaw = fm.get();
-    auto* thread = QThread::create([this, fm = std::move(fm), fmRaw,
+    QPointer<ScefController> guard(this);
+    auto* thread = QThread::create([guard, fm = std::move(fm), fmRaw,
                                     workFn = std::move(workFn),
                                     onSuccess = std::move(onSuccess)]() mutable {
         QString error;
@@ -239,18 +245,24 @@ void ScefController::runAsync(std::unique_ptr<FileManager> fm,
             error = QString::fromUtf8(e.what());
         }
 
-        QMetaObject::invokeMethod(this, [this, error, fm = std::move(fm),
+        QMetaObject::invokeMethod(qApp, [guard, error, fm = std::move(fm),
                                          onSuccess = std::move(onSuccess)]() mutable {
+            if (!guard) {
+                // Controller was destroyed while the worker was running.
+                fm.reset();
+                return;
+            }
+            auto* self = guard.data();
             if (error.isEmpty()) {
-                fileManager_ = std::move(fm);
+                self->fileManager_ = std::move(fm);
                 onSuccess();
             } else {
                 fm.reset();
             }
 
-            busy_ = false;
-            emit busyChanged();
-            emit operationFinished(error);
+            self->busy_ = false;
+            emit self->busyChanged();
+            emit self->operationFinished(error);
         }, Qt::QueuedConnection);
     });
 

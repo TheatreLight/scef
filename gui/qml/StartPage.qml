@@ -109,9 +109,14 @@ Page {
             errorLabel.visible = false
             var pw = passwordDialog.password
             passwordDialog.password = ""
+            var err = controller.openContainer(passwordDialog.containerPath, pw)
+            if (err !== "") {
+                errorLabel.text = err
+                errorLabel.visible = true
+                return
+            }
             waitingForOpen = true
             busyDialog.open()
-            controller.openContainer(passwordDialog.containerPath, pw)
         }
 
         onRejected: {
