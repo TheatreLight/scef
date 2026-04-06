@@ -20,6 +20,47 @@ Page {
         }
     }
 
+    // Track whether WE started the open operation (vs CreatePage or FileListPage).
+    property bool waitingForOpen: false
+
+    Connections {
+        target: controller
+        function onOperationFinished(error) {
+            if (!waitingForOpen) return
+            waitingForOpen = false
+            busyDialog.close()
+            if (error !== "") {
+                errorLabel.text = error
+                errorLabel.visible = true
+            } else {
+                stackView.push(fileListPage)
+            }
+        }
+    }
+
+    Dialog {
+        id: busyDialog
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        standardButtons: Dialog.NoButton
+        title: "Opening container..."
+
+        ColumnLayout {
+            spacing: 16
+
+            BusyIndicator {
+                running: true
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Label {
+                text: "Deriving encryption key from password.\nThis may take a few seconds..."
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
 
     Dialog {
         id: overwriteDialog
@@ -52,6 +93,7 @@ Page {
         title: "Select container file"
         nameFilters: ["SCEF containers (*.scef)", "All files (*)"]
         onAccepted: {
+            errorLabel.visible = false
             passwordDialog.containerPath = selectedFile
             passwordDialog.open()
         }
@@ -67,17 +109,24 @@ Page {
             errorLabel.visible = false
             var pw = passwordDialog.password
             passwordDialog.password = ""
-            var error = controller.openContainer(passwordDialog.containerPath, pw)
-            if (error !== "") {
-                errorLabel.text = error
+            var err = controller.openContainer(passwordDialog.containerPath, pw)
+            if (err !== "") {
+                errorLabel.text = err
                 errorLabel.visible = true
-            } else {
-                stackView.push(fileListPage)
+                return
             }
+            waitingForOpen = true
+            busyDialog.open()
         }
 
         onRejected: {
             passwordDialog.containerPath = ""
+            errorLabel.visible = false
+        }
+    }
+
+    StackView.onStatusChanged: {
+        if (StackView.status === StackView.Active) {
             errorLabel.visible = false
         }
     }
@@ -202,6 +251,7 @@ Page {
                 enabled: selectedDriveIndex >= 0 && driveListRevision >= 0
                          && controller.driveListModel.hasContainerAtRow(selectedDriveIndex)
                 onClicked: {
+                    errorLabel.visible = false
                     var drivePath = controller.driveListModel.pathAtRow(selectedDriveIndex)
                     passwordDialog.containerPath = "file:///" + drivePath + "container.scef"
                     passwordDialog.open()

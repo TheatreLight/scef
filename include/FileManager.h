@@ -4,6 +4,7 @@
 #include "CryptoManager.h"
 #include "Header.h"
 #include "FileTable.h"
+#include "KdfProfiles.h"
 
 #include <array>
 #include <fstream>
@@ -45,10 +46,20 @@ public:
               uint64_t container_size = 0, uint32_t max_table_size = DEFAULT_MAX_TABLE_SIZE,
               bool create_new = false,
               const std::string& password = "");
+    // Configure KDF parameters for container creation.
+    // Must be called BEFORE write() when creating a new container.
+    //   profile != None  → look up params from the profile table (m_kib/t/p are ignored).
+    //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
+    void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
+
     void readMeta();
     void extract(const std::string& pathToOutputFolder);
     void write();
     void add();
+
+    // Replace the file list without re-initializing the container.
+    // Used by the GUI to reuse an already-open FileManager for add/extract.
+    void setFilesList(const std::vector<std::string>& filesList) { filesList_ = filesList; }
 
     void printHeader() const;
     void printFilesTable() const;
@@ -117,17 +128,23 @@ private:
     // Updates the header with the salt, dek_nonce, encrypted_dek, and dek_auth_tag.
     void initCryptoForCreate();
 
-    // Initialize crypto for an existing container (read header, derive KEK, unwrap DEK).
-    // Must be called after readHeader().
-    // Throws std::runtime_error on wrong password or corrupt header.
-    void initCryptoForRead();
+    // Validate KDF parameters from the current header and derive the KEK from
+    // password_ + header salt.  Zeros password_ after use.
+    // Must be called once per open, before any per-slot unwrapDek calls.
+    // Throws std::runtime_error if KDF params are out of range or Argon2id fails.
+    void validateKdfParamsAndDeriveKek();
+
+    // Unwrap (decrypt) the DEK from the current header using the already-derived KEK.
+    // Must be called after validateKdfParamsAndDeriveKek().
+    // Throws std::runtime_error on wrong password or corrupt DEK.
+    void unwrapDekFromHeader();
 
     // Compute and store header HMAC. Call after all header fields are set and
     // crypto is ready.
     void computeAndStoreHeaderHmac();
 
     // Verify header HMAC. Throws std::runtime_error if mismatch.
-    // Must be called after initCryptoForRead().
+    // Must be called after validateKdfParamsAndDeriveKek().
     void verifyHeaderHmac();
 
     void readHeader();

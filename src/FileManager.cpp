@@ -1,5 +1,6 @@
 #include "FileManager.h"
 #include "Header.h"
+#include "KdfProfiles.h"
 
 #include "botan/mem_ops.h"
 #include "botan/secmem.h"
@@ -148,6 +149,26 @@ void FileManager::readFragmented(char* buf, size_t size) {
     }
 }
 
+// ---- KDF configuration ----
+
+void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p) {
+    if (profile != EKDFProfile::None) {
+        const KdfProfileParams* params = getProfileParams(profile);
+        if (!params) {
+            throw std::runtime_error("setKdfParams: unrecognized KDF profile");
+        }
+        header_->setKdfProfile(profile);
+        header_->setKdfMKib(params->m_kib);
+        header_->setKdfT(params->t);
+        header_->setKdfP(params->p);
+    } else {
+        header_->setKdfProfile(EKDFProfile::None);
+        header_->setKdfMKib(m_kib);
+        header_->setKdfT(t);
+        header_->setKdfP(p);
+    }
+}
+
 // ---- crypto helpers ----
 
 void FileManager::initCryptoForCreate() {
@@ -169,27 +190,41 @@ void FileManager::initCryptoForCreate() {
     header_->setDekAuthTag(dekAuthTag);
 }
 
-void FileManager::initCryptoForRead() {
-    // Validate KDF parameters before use: reject values that could cause OOM or
-    // excessive runtime from a crafted header (DoS). These bounds are checked
-    // before HMAC verification to avoid the cost of a full Argon2id invocation
-    // with attacker-controlled parameters.
+void FileManager::validateKdfParamsAndDeriveKek() {
+    // Validate KDF parameters before use: reject values outside the absolute
+    // supported range (OOM/infinite-loop guard).  NOTE: authenticity (HMAC) can
+    // only be checked AFTER KEK derivation, so these parameter values are not
+    // yet authenticated at this point.  The bounds check limits — but does not
+    // eliminate — the maximum Argon2id cost an attacker-supplied header can
+    // impose (chicken-and-egg: KEK is needed for HMAC, HMAC is needed to trust
+    // KDF params).
     uint32_t mKib = header_->getKdfMKib();
     uint32_t t     = header_->getKdfT();
     uint32_t p     = header_->getKdfP();
-    if (mKib < 8 || mKib > 1048576 || t < 1 || t > 100 || p < 1 || p > 64) {
+    if (mKib < KDF_M_KIB_MIN || mKib > KDF_M_KIB_MAX ||
+        t < KDF_T_MIN || t > KDF_T_MAX ||
+        p < KDF_P_MIN || p > KDF_P_MAX) {
         throw std::runtime_error("Header KDF parameters out of acceptable range");
     }
 
-    // Derive KEK from the password and the salt read from the header,
-    // using the KDF parameters stored in the header.
-    crypto_->deriveKek(password_, *header_);
+    // Derive KEK from the password and the salt read from the header.
+    // This is the expensive Argon2id call — performed exactly once per open.
+    try {
+        crypto_->deriveKek(password_, *header_);
+    } catch (...) {
+        Botan::secure_scrub_memory(password_.data(), password_.size());
+        password_.clear();
+        throw;
+    }
 
     // Zero the password immediately after deriving the KEK.
     Botan::secure_scrub_memory(password_.data(), password_.size());
     password_.clear();
+}
 
-    // Unwrap DEK — throws on wrong password or corrupt header.
+void FileManager::unwrapDekFromHeader() {
+    // Unwrap DEK using the already-derived KEK — throws on wrong password or
+    // corrupt DEK ciphertext.
     crypto_->unwrapDek(header_->getDekNonce(),
                        header_->getEncryptedDek(),
                        header_->getDekAuthTag());
@@ -359,18 +394,36 @@ void FileManager::readMeta() {
 
     // Crash resilience strategy (spec 4.6.3):
     //   - Try all 4 slots (0, then 1-3 as backups).
-    //   - For each slot: check magic → init crypto (derive KEK) → verify HMAC.
-    //   - First slot that passes all three checks wins.
-    //   - If a slot has valid magic but HMAC fails, continue to next slot
+    //   - For each slot: check magic → (derive KEK once) → verify HMAC → unwrap DEK.
+    //   - First slot that passes all checks wins.
+    //   - If a slot has valid magic but DEK/HMAC fails, continue to next slot
     //     (the HMAC-protected region may be corrupted by a bad sector/USB glitch
     //     while backup slots remain intact).
     //   - If ALL slots fail:
-    //       - If at least one had valid magic but HMAC failed → "wrong password
+    //       - If at least one had valid magic but auth failed → "wrong password
     //         or container corrupted" (wrong password is the common case since
     //         all slots share the same key).
     //       - If no slot had valid magic → "invalid container".
+    //
+    // Performance note: in the normal (non-corrupted) case, all 4 slots are
+    // identical copies of the same header, so they share the same salt and KDF
+    // parameters.  The KEK is therefore the same for every slot.  We derive the
+    // KEK exactly once (from the first magic-valid slot) and reuse it for the
+    // remaining slots — avoiding up to 3 redundant Argon2id invocations.
+    //
+    // Corruption recovery: if a slot passes magic validation but its KDF params
+    // or salt were corrupted by a single-bit flip, the derived KEK will be wrong
+    // and DEK unwrap / HMAC verification will fail on that same slot.  In that
+    // case we allow ONE re-derivation from the next magic-valid slot (whose salt
+    // may be intact).  After two independently derived KEKs both fail, it is
+    // almost certainly a wrong password rather than multi-slot corruption, so we
+    // stop re-deriving to prevent unbounded Argon2id cost.
+    //
+    // To support re-derivation the password must still be available after the
+    // first Argon2id call.  We keep a local secure copy that is scrubbed at the
+    // end of this function on all code paths.
 
-    // Helper: read one header slot. Returns true if magic is valid.
+    // Helper: read one header slot into header_. Returns true if magic is valid.
     auto trySlotMagic = [this](uint64_t offset) -> bool {
         containerStream_->clear();
         containerStream_->seekg(static_cast<std::streamoff>(offset), std::ios::beg);
@@ -382,6 +435,11 @@ void FileManager::readMeta() {
         header_->read(hdrBuf);
         return header_->validate();
     };
+
+    // Preserve a scrub-on-exit copy of the password for potential re-derivation.
+    // validateKdfParamsAndDeriveKek() zeroes password_ after the first use, so
+    // the local copy is our only re-derivation source.
+    Botan::secure_vector<char> passwordCopy(password_.begin(), password_.end());
 
     // Compute slot offsets from file size (== container size for well-formed files).
     // Cannot use slotOffsets_ here — it's populated after readMeta() returns.
@@ -396,13 +454,18 @@ void FileManager::readMeta() {
         offsets[i] = computeSlotOffset(fileSize, SLOT_PERCENTAGES[i], HEADER_SIZE);
     }
 
-    // Use secure_vector<char> so the password copy is scrubbed on all exit paths,
-    // including exception unwinds — plain std::string does not guarantee zeroing.
-    Botan::secure_vector<char> savedPassword(password_.begin(), password_.end());
-
-    bool recovered = false;
-    int slotsWithValidMagic = 0;
+    bool recovered  = false;
+    bool kekDerived = false;   // true once validateKdfParamsAndDeriveKek() succeeds
+    int  kekDerivations = 0;  // how many Argon2id calls were made this open
+    constexpr int MAX_KEK_DERIVATIONS = 2;
+    int  slotsWithValidMagic = 0;
     std::string lastError = "all slots unreadable";
+    // KDF inputs used for the most recent KEK derivation.  Saved so we can
+    // detect whether a subsequent slot has DIFFERENT KDF inputs (genuine
+    // corruption) vs. the same inputs (wrong password — re-deriving would give
+    // the identical wrong KEK and waste one full Argon2id call).
+    std::array<uint8_t, 32> kekSalt{};
+    uint32_t kekMKib = 0, kekT = 0, kekP = 0;
 
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         uint64_t slotOff = offsets[i];
@@ -413,22 +476,60 @@ void FileManager::readMeta() {
 
         slotsWithValidMagic++;
 
-        // Restore password (may have been cleared by a previous failed attempt).
-        password_.assign(savedPassword.begin(), savedPassword.end());
+        // Re-derivation check: if we already have a KEK but a previous slot
+        // failed auth, check whether THIS slot has different KDF inputs (salt
+        // or params) from the ones used to derive the KEK.  If different →
+        // the KEK-source slot was corrupted, allow one re-derivation.  If all
+        // inputs match → wrong password, re-deriving gives the same wrong KEK.
+        if (kekDerived && kekDerivations < MAX_KEK_DERIVATIONS &&
+            (header_->getSalt() != kekSalt ||
+             header_->getKdfMKib() != kekMKib ||
+             header_->getKdfT() != kekT ||
+             header_->getKdfP() != kekP)) {
+            kekDerived = false;
+        }
 
         try {
-            initCryptoForRead();
+            if (!kekDerived) {
+                // Derive KEK from this slot's KDF params + salt.
+                // validateKdfParamsAndDeriveKek() reads password_ but zeroes it
+                // after use; we rely on passwordCopy for any second derivation.
+                // Restore password_ from our copy before each derivation call.
+                password_.assign(passwordCopy.begin(), passwordCopy.end());
+                validateKdfParamsAndDeriveKek(); // zeroes password_ on success
+                kekDerived = true;
+                kekDerivations++;
+                kekSalt = header_->getSalt();
+                kekMKib = header_->getKdfMKib();
+                kekT    = header_->getKdfT();
+                kekP    = header_->getKdfP();
+            }
+            // KEK is ready.  Authenticate first (HMAC), then decrypt (DEK unwrap).
+            // Authenticate-then-decrypt: verifying the HMAC before touching the
+            // ciphertext prevents padding-oracle / chosen-ciphertext attacks.
             verifyHeaderHmac();
+            unwrapDekFromHeader();
             activeSlotOffset_ = slotOff;
             recovered = true;
             break;
         } catch (const std::exception& ex) {
             lastError = ex.what();
-            Botan::secure_scrub_memory(password_.data(), password_.size());
-            password_.clear();
+            // If the KEK was derived but auth failed, the KEK-source slot's salt
+            // might have been corrupted.  We defer the re-derivation decision to
+            // the NEXT slot: when trySlotMagic() loads slot i+1, we compare its
+            // salt to kekSalt.  Same salt → wrong password (re-derive is useless);
+            // different salt → corruption, worth one re-derivation.
+            // The check lives at the TOP of the next iteration (see below).
         }
     }
-    // secure_vector destructor scrubs savedPassword automatically.
+
+    // Zero the local password copy and the member on all exit paths.
+    Botan::secure_scrub_memory(passwordCopy.data(), passwordCopy.size());
+    passwordCopy.clear();
+    if (!password_.empty()) {
+        Botan::secure_scrub_memory(password_.data(), password_.size());
+        password_.clear();
+    }
 
     if (!recovered) {
         if (slotsWithValidMagic > 0) {

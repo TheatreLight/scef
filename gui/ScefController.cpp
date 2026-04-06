@@ -1,7 +1,10 @@
 #include "ScefController.h"
 #include "FileManager.h"
+#include "KdfProfiles.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
+#include <QPointer>
 #include <QUrl>
 
 #include <botan/mem_ops.h>
@@ -44,7 +47,11 @@ ScefController::~ScefController()
 QString ScefController::createContainer(const QString& destDir,
                                          const QStringList& files,
                                          const QString& password,
-                                         quint64 sizeMB)
+                                         quint64 sizeMB,
+                                         int kdfProfileIndex,
+                                         int kdfM_MiB,
+                                         int kdfT,
+                                         int kdfP)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
@@ -53,11 +60,32 @@ QString ScefController::createContainer(const QString& destDir,
     auto pwd = password.toStdString();
     uint64_t sizeBytes = sizeMB * 1024ULL * 1024ULL;
 
+    // Map profile index (0–3 = named profiles, 4 = custom) to EKDFProfile.
+    EKDFProfile profile;
+    switch (kdfProfileIndex) {
+        case 1:  profile = EKDFProfile::FastAccess;   break;
+        case 2:  profile = EKDFProfile::HighSecurity; break;
+        case 3:  profile = EKDFProfile::Browser;      break;
+        case 4:  profile = EKDFProfile::None;         break;
+        default: profile = EKDFProfile::Standard;     break;  // index 0 = Standard
+    }
+
     // Pre-validate synchronously (init checks size before creating file)
     try {
         fileManager_ = std::make_unique<FileManager>();
         fileManager_->init(paths, dir, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
                            /*create_new=*/true, pwd);
+
+        if (profile != EKDFProfile::None) {
+            const KdfProfileParams* p = getProfileParams(profile);
+            if (p)
+                fileManager_->setKdfParams(profile, p->m_kib, p->t, p->p);
+        } else {
+            fileManager_->setKdfParams(EKDFProfile::None,
+                                       static_cast<uint32_t>(kdfM_MiB) * 1024u,
+                                       static_cast<uint32_t>(kdfT),
+                                       static_cast<uint32_t>(kdfP));
+        }
     } catch (const std::exception& e) {
         fileManager_.reset();
         return QString::fromUtf8(e.what());
@@ -84,45 +112,49 @@ QString ScefController::openContainer(const QString& containerPath,
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
-    try {
-        auto filePath = toLocalPath(containerPath);
-        QFileInfo fi(QString::fromStdString(filePath));
-        auto dir = fi.absolutePath().toStdString();
-        auto pwd = password.toStdString();
+    auto filePath = toLocalPath(containerPath);
+    QFileInfo fi(QString::fromStdString(filePath));
+    auto dir = fi.absolutePath().toStdString();
+    auto pwd = password.toStdString();
+    auto dirQ = fi.absolutePath();
 
-        fileManager_ = std::make_unique<FileManager>();
-        fileManager_->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                           /*create_new=*/false, pwd);
+    auto fm = std::make_unique<FileManager>();
 
-        scrubPassword();
-        currentPassword_ = std::move(pwd);
-        currentContainerDir_ = fi.absolutePath();
-        containerOpen_ = true;
-        emit containerOpenChanged();
+    // Explicit copy for the worker lambda — C++ does not guarantee argument
+    // evaluation order, so capturing pwd by copy in one lambda and by move
+    // in another (both as function arguments) is undefined behavior.
+    auto pwdForWorker = pwd;
 
-        refreshFileList();
-        return {};
-    } catch (const std::exception& e) {
-        fileManager_.reset();
-        return QString::fromUtf8(e.what());
-    }
+    runAsync(std::move(fm),
+        [dir, pwdForWorker = std::move(pwdForWorker)](FileManager* f) mutable {
+            f->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
+                    /*create_new=*/false, pwdForWorker);
+            Botan::secure_scrub_memory(pwdForWorker.data(), pwdForWorker.size());
+            pwdForWorker.clear();
+        },
+        [this, dirQ, pwd = std::move(pwd)]() mutable {
+            scrubPassword();
+            currentPassword_ = std::move(pwd);
+            currentContainerDir_ = dirQ;
+            containerOpen_ = true;
+            emit containerOpenChanged();
+            refreshFileList();
+        });
+
+    return {};
 }
 
 QString ScefController::addFiles(const QStringList& filePaths)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
+    if (!fileManager_) return QStringLiteral("No container is open");
 
-    // Each operation creates a fresh FileManager that re-reads current container
-    // state from disk, ensuring we always operate on the latest on-disk data.
     try {
         auto paths = toStdPaths(filePaths);
-        auto dir = currentContainerDir_.toStdString();
+        fileManager_->setFilesList(paths);
 
-        auto fm = std::make_unique<FileManager>();
-        fm->init(paths, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                 /*create_new=*/false, currentPassword_);
-
-        runAsync(std::move(fm),
+        // Transfer ownership to the async worker; it returns via onSuccess.
+        runAsync(std::move(fileManager_),
             [](FileManager* f) { f->add(); },
             [this]() { refreshFileList(); });
 
@@ -136,6 +168,7 @@ QString ScefController::extractFiles(const QStringList& fileNames,
                                       const QString& outputDir)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
+    if (!fileManager_) return QStringLiteral("No container is open");
 
     try {
         std::vector<std::string> names;
@@ -143,14 +176,10 @@ QString ScefController::extractFiles(const QStringList& fileNames,
         for (const auto& n : fileNames)
             names.push_back(n.toStdString());
 
-        auto dir = currentContainerDir_.toStdString();
         auto outDir = toLocalPath(outputDir);
+        fileManager_->setFilesList(names);
 
-        auto fm = std::make_unique<FileManager>();
-        fm->init(names, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                 /*create_new=*/false, currentPassword_);
-
-        runAsync(std::move(fm),
+        runAsync(std::move(fileManager_),
             [outDir](FileManager* f) { f->extract(outDir); },
             []() {});
 
@@ -162,6 +191,7 @@ QString ScefController::extractFiles(const QStringList& fileNames,
 
 void ScefController::closeContainer()
 {
+    if (busy_) return;
     fileManager_.reset();
     fileListModel_->clear();
     scrubPassword();
@@ -204,7 +234,8 @@ void ScefController::runAsync(std::unique_ptr<FileManager> fm,
 
     // Transfer FileManager ownership to the worker thread to avoid race conditions.
     auto* fmRaw = fm.get();
-    auto* thread = QThread::create([this, fm = std::move(fm), fmRaw,
+    QPointer<ScefController> guard(this);
+    auto* thread = QThread::create([guard, fm = std::move(fm), fmRaw,
                                     workFn = std::move(workFn),
                                     onSuccess = std::move(onSuccess)]() mutable {
         QString error;
@@ -214,18 +245,24 @@ void ScefController::runAsync(std::unique_ptr<FileManager> fm,
             error = QString::fromUtf8(e.what());
         }
 
-        QMetaObject::invokeMethod(this, [this, error, fm = std::move(fm),
+        QMetaObject::invokeMethod(qApp, [guard, error, fm = std::move(fm),
                                          onSuccess = std::move(onSuccess)]() mutable {
+            if (!guard) {
+                // Controller was destroyed while the worker was running.
+                fm.reset();
+                return;
+            }
+            auto* self = guard.data();
             if (error.isEmpty()) {
-                fileManager_ = std::move(fm);
+                self->fileManager_ = std::move(fm);
                 onSuccess();
             } else {
                 fm.reset();
             }
 
-            busy_ = false;
-            emit busyChanged();
-            emit operationFinished(error);
+            self->busy_ = false;
+            emit self->busyChanged();
+            emit self->operationFinished(error);
         }, Qt::QueuedConnection);
     });
 

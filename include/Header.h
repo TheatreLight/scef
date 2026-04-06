@@ -71,7 +71,7 @@ Spec Table 4.2 -- SCEF v1.0 header layout:
 | 0x0008 | 4  | header_size      | uint32_le   | = 4096                                         |
 | 0x000C | 1  | cipher_id        | uint8       | 0x01 = AES-256-GCM, 0x02 = Kuznechik-GCM      |
 | 0x000D | 1  | kdf_id           | uint8       | 0x01 = Argon2id                                |
-| 0x000E | 2  | kdf_profile_id   | uint16_le   | 0 = custom, 1-5 = predefined                   |
+| 0x000E | 2  | kdf_profile_id   | uint16_le   | 0 = custom, 1-4 = predefined                   |
 | 0x0010 | 4  | kdf_m_kib        | uint32_le   | Argon2id memory in KiB                         |
 | 0x0014 | 4  | kdf_t            | uint32_le   | Argon2id iterations                            |
 | 0x0018 | 4  | kdf_p            | uint32_le   | Argon2id parallelism                           |
@@ -123,6 +123,12 @@ public:
     void increaseFileCount();
     void incrementHeaderVersion();
 
+    // KDF parameter setters — call before initCryptoForCreate() on new containers.
+    void setKdfProfile(EKDFProfile profile);
+    void setKdfMKib(uint32_t m_kib);
+    void setKdfT(uint32_t t);
+    void setKdfP(uint32_t p);
+
     // DEK wrapping fields — set by CryptoManager::wrapDek(), read by unwrapDek().
     void setDekNonce(const std::array<uint8_t, NONCE_SIZE>& nonce);
     void setEncryptedDek(const std::array<uint8_t, 32>& enc_dek);
@@ -160,10 +166,10 @@ private:
     uint32_t header_size_                            = HEADER_SIZE;
     ECipher  cipher_                                 = ECipher::AES_256_GCM;
     EKDF     kdf_                                    = EKDF::Argon2id;
-    EKDFProfile kdf_profile_                         = EKDFProfile::None;
-    uint32_t kdf_m_kib_                              = 64;  // matches Argon2id stub params
-    uint32_t kdf_t_                                  = 1;
-    uint32_t kdf_p_                                  = 1;
+    EKDFProfile kdf_profile_                         = EKDFProfile::Standard;
+    uint32_t kdf_m_kib_                              = 65536;   // 64 MiB — Standard profile
+    uint32_t kdf_t_                                  = 3;
+    uint32_t kdf_p_                                  = 4;
     std::array<uint8_t, 32> salt_                    = {};
     std::array<uint8_t, NONCE_SIZE> dek_nonce_       = {};
     std::array<uint8_t, 32> encrypted_dek_           = {};
