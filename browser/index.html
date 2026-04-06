@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCEF Viewer</title>
+    <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+    <div class="title-row">
+        <div>
+            <h1>SCEF Viewer</h1>
+            <p class="subtitle">Encrypted Container &mdash; Browser Decryptor</p>
+        </div>
+        <button id="lock-btn" class="lock-btn" style="display:none">Lock</button>
+    </div>
+
+    <div id="status" class="status info">Select a .scef container file to begin.</div>
+
+    <div class="section" id="file-section" style="display:none">
+        <label for="container-input">Select container.scef from this folder</label>
+        <input type="file" id="container-input" accept=".scef">
+    </div>
+
+    <div class="section" id="password-section">
+        <label for="password-input">Password</label>
+        <div>
+            <input type="password" id="password-input" placeholder="Enter container password">
+            <button id="unlock-btn">Unlock</button>
+        </div>
+    </div>
+
+    <div class="section" id="header-info"></div>
+    <div class="section" id="file-list"></div>
+
+    <!-- Development: load modules via separate script tags -->
+    <script src="vendor/argon2.umd.min.js"></script>
+    <script src="vendor/jszip.min.js"></script>
+    <script src="src/header.js"></script>
+    <script src="src/kdf.js"></script>
+    <script src="src/crypto.js"></script>
+    <script src="src/filetable.js"></script>
+    <script src="src/download.js"></script>
+    <script src="src/ui.js"></script>
+    <script src="src/app.js"></script>
+</body>
+</html>
