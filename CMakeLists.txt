@@ -110,6 +110,13 @@ if(SCEF_BUILD_TESTS)
     add_test(NAME scef_unit_tests COMMAND scef_unit_tests)
 endif()
 
+# --- Browser viewer test vector generator (optional) ---
+option(SCEF_BUILD_BROWSER_TESTS "Build browser viewer test vector generator" OFF)
+if(SCEF_BUILD_BROWSER_TESTS)
+    add_executable(generate_vectors browser/test/generate_vectors.cpp)
+    target_link_libraries(generate_vectors PRIVATE scef_lib)
+endif()
+
 # --- Qt GUI (optional) ---
 option(SCEF_BUILD_GUI "Build Qt QML GUI" OFF)
 if(SCEF_BUILD_GUI)
