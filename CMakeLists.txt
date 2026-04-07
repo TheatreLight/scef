@@ -65,6 +65,7 @@ add_library(scef_lib STATIC
     src/FileManager.cpp
     src/FileTable.cpp
     src/KdfProfiles.cpp
+    src/Logger.cpp
 )
 
 target_include_directories(scef_lib PUBLIC
@@ -76,6 +77,9 @@ target_include_directories(scef_lib PRIVATE
 )
 
 target_compile_features(scef_lib PUBLIC cxx_std_20)
+
+# Expose version as a compile definition so Logger and CLI share a single source.
+target_compile_definitions(scef_lib PUBLIC SCEF_VERSION="${PROJECT_VERSION}")
 
 if(TARGET PkgConfig::BOTAN)
     target_link_libraries(scef_lib PUBLIC PkgConfig::BOTAN)

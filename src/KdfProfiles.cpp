@@ -1,7 +1,6 @@
 #include "KdfProfiles.h"
 
 #include <array>
-#include <cstring>
 
 // NOTE: all parameter values are TEMPORARY stubs that will be recalibrated
 // after the benchmark command is used to measure real timings on target hardware.

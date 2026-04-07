@@ -1,10 +1,12 @@
 #include "FileManager.h"
 #include "KdfProfiles.h"
+#include "Logger.h"
 
 #include "botan/auto_rng.h"
 #include "botan/pwdhash.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -15,7 +17,7 @@
 namespace {
 
 void print_help() {
-    std::cout << "scef v0.1.0 - Self-contained Encrypted Container Format\n"
+    std::cout << "scef v" SCEF_VERSION " - Self-contained Encrypted Container Format\n"
               << "\n"
               << "Usage: scef <command> [options]\n"
               << "\n"
@@ -48,7 +50,7 @@ void print_help() {
 }
 
 void print_version() {
-    std::cout << "scef v0.1.0\n";
+    std::cout << "scef v" SCEF_VERSION "\n";
 }
 
 // Read a password from stdin (up to the first newline or EOF).
@@ -60,8 +62,6 @@ std::string read_password() {
     }
     return pw;
 }
-
-} // namespace
 
 // Returns the flag string if arg is a recognized flag key, otherwise "".
 std::string foundKey(const char* arg) {
@@ -124,6 +124,8 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
     return 0;
 }
 
+} // namespace
+
 // Resolve KDF parameters from parsed CLI args.
 // On success returns 0 and fills out profile/m_kib/t/p.
 // On error prints to stderr and returns EXIT_FAILURE.
@@ -136,16 +138,15 @@ static int resolveKdfParams(const ParsedArgs& args,
     bool has_manual  = (args.kdf_m_mib != 0 || args.kdf_t != 0 || args.kdf_p != 0);
 
     if (has_profile && has_manual) {
-        std::cerr << "ERROR: Cannot use --kdf-profile with manual KDF parameters "
-                     "(--kdf-m, --kdf-t, --kdf-p)\n";
+        LOG_ERROR("Cannot use --kdf-profile with manual KDF parameters (--kdf-m, --kdf-t, --kdf-p)");
         return EXIT_FAILURE;
     }
 
     if (has_profile) {
         const KdfProfileParams* p = getProfileByName(args.kdf_profile_name);
         if (!p) {
-            std::cerr << "ERROR: Unknown KDF profile '" << args.kdf_profile_name
-                      << "'. Valid names: fast, default, high, browser\n";
+            LOG_ERROR("Unknown KDF profile '%s'. Valid names: fast, default, high, browser",
+                      args.kdf_profile_name.c_str());
             return EXIT_FAILURE;
         }
         out_profile = p->id;
@@ -163,18 +164,18 @@ static int resolveKdfParams(const ParsedArgs& args,
 
         // Validate ranges.
         if (out_m_kib < KDF_M_KIB_MIN || out_m_kib > KDF_M_KIB_MAX) {
-            std::cerr << "ERROR: --kdf-m must be between 1 and 4096 MiB\n";
+            LOG_ERROR("--kdf-m must be between 1 and 4096 MiB");
             return EXIT_FAILURE;
         }
         if (out_m_kib < KDF_M_KIB_WARN) {
-            std::cerr << "WARNING: --kdf-m below 8 MiB provides weak security\n";
+            LOG_WARN("--kdf-m below 8 MiB provides weak security");
         }
         if (out_t < KDF_T_MIN || out_t > KDF_T_MAX) {
-            std::cerr << "ERROR: --kdf-t must be between 1 and 100\n";
+            LOG_ERROR("--kdf-t must be between 1 and 100");
             return EXIT_FAILURE;
         }
         if (out_p < KDF_P_MIN || out_p > KDF_P_MAX) {
-            std::cerr << "ERROR: --kdf-p must be between 1 and 64\n";
+            LOG_ERROR("--kdf-p must be between 1 and 64");
             return EXIT_FAILURE;
         }
     } else {
@@ -306,6 +307,14 @@ static int cmd_benchmark() {
 }
 
 int main(int argc, char* argv[]) {
+    // Mirror log output to console: INFO/DEBUG → stdout, WARNING/ERROR → stderr.
+    Logger::init(/*mirror_to_console=*/true);
+#ifdef NDEBUG
+    Logger::setLevel(LogLevel::INFO);
+#else
+    Logger::setLevel(LogLevel::DEBUG);
+#endif
+
     if (argc < 2) {
         print_help();
         return EXIT_SUCCESS;
@@ -339,15 +348,15 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         if (args.containerPath.empty()) {
-            std::cerr << "ERROR: -c <container_dir> is required for create\n";
+            LOG_ERROR("-c <container_dir> is required for create");
             return EXIT_FAILURE;
         }
         if (args.container_size == 0) {
-            std::cerr << "ERROR: -s <size_bytes> is required for create\n";
+            LOG_ERROR("-s <size_bytes> is required for create");
             return EXIT_FAILURE;
         }
         if (args.fileList.empty()) {
-            std::cerr << "ERROR: at least one -f <file> is required for create\n";
+            LOG_ERROR("at least one -f <file> is required for create");
             return EXIT_FAILURE;
         }
 
@@ -365,7 +374,7 @@ int main(int argc, char* argv[]) {
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
             fileManager.write();
         } catch (const std::exception& e) {
-            std::cerr << "ERROR: create failed: " << e.what() << "\n";
+            LOG_ERROR("create failed: %s", e.what());
             return EXIT_FAILURE;
         }
     } else if (cmd == "add") {
@@ -374,7 +383,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         if (args.containerPath.empty()) {
-            std::cerr << "ERROR: -c <container_dir> is required for add\n";
+            LOG_ERROR("-c <container_dir> is required for add");
             return EXIT_FAILURE;
         }
         try {
@@ -383,7 +392,7 @@ int main(int argc, char* argv[]) {
                              /*create_new=*/false, password);
             fileManager.add();
         } catch (const std::exception& e) {
-            std::cerr << "ERROR: add failed: " << e.what() << "\n";
+            LOG_ERROR("add failed: %s", e.what());
             return EXIT_FAILURE;
         }
     } else if (cmd == "list") {
@@ -392,7 +401,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         if (args.containerPath.empty()) {
-            std::cerr << "ERROR: -c <container_dir> is required for list\n";
+            LOG_ERROR("-c <container_dir> is required for list");
             return EXIT_FAILURE;
         }
         try {
@@ -401,7 +410,7 @@ int main(int argc, char* argv[]) {
                              /*create_new=*/false, password);
             fileManager.printFilesTable();
         } catch (const std::exception& e) {
-            std::cerr << "ERROR: list failed: " << e.what() << "\n";
+            LOG_ERROR("list failed: %s", e.what());
             return EXIT_FAILURE;
         }
     } else if (cmd == "extract") {
@@ -411,11 +420,11 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         if (args.containerPath.empty()) {
-            std::cerr << "ERROR: -c <container_dir> is required for extract\n";
+            LOG_ERROR("-c <container_dir> is required for extract");
             return EXIT_FAILURE;
         }
         if (args.outputPath.empty()) {
-            std::cerr << "ERROR: -o <output_dir> is required for extract\n";
+            LOG_ERROR("-o <output_dir> is required for extract");
             return EXIT_FAILURE;
         }
         try {
@@ -424,11 +433,11 @@ int main(int argc, char* argv[]) {
                              /*create_new=*/false, password);
             fileManager.extract(args.outputPath);
         } catch (const std::exception& e) {
-            std::cerr << "ERROR: extract failed: " << e.what() << "\n";
+            LOG_ERROR("extract failed: %s", e.what());
             return EXIT_FAILURE;
         }
     } else {
-        std::cerr << "Unknown command: " << cmd << "\n";
+        LOG_ERROR("Unknown command: %s", std::string(cmd).c_str());
         print_help();
         return EXIT_FAILURE;
     }

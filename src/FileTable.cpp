@@ -1,5 +1,6 @@
 #include "FileTable.h"
 #include "Header.h"
+#include "Logger.h"
 
 #include "nlohmann/json.hpp"
 #include "botan/hex.h"
@@ -47,6 +48,9 @@ void FileTable::addFileEntry(const std::string& pathToFile, const std::string& c
     file.checksum_sha256 = checkSum;
 
     filesTable_.push_back(file);
+    LOG_DEBUG("addFileEntry: '%s', size=%zu, chunks=%zu, offset=%zu, sha256=%.16s...",
+              file.name.c_str(), file.size, file.chunks, file.offset,
+              file.checksum_sha256.c_str());
 }
 
 std::string FileTable::serialize() {
