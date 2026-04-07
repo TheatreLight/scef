@@ -15,10 +15,10 @@
  * @param {File} file - container File object
  * @param {object} header - parsed header
  * @param {number} slotOffset - byte offset of the active slot
- * @param {Uint8Array} dek - 32-byte DEK
+ * @param {CryptoKey} dekKey - pre-imported DEK CryptoKey
  * @returns {Promise<object>} parsed file table { nextWriteOffset, files: [...] }
  */
-async function readFileTable(file, header, slotOffset, dek) {
+async function readFileTable(file, header, slotOffset, dekKey) {
     const encSize = header.fileTableSize;
 
     // No files in container
@@ -33,7 +33,7 @@ async function readFileTable(file, header, slotOffset, dek) {
 
     // Decrypt: encBuf = [nonce 12][ciphertext][tag 16]
     // decryptChunk expects the same layout
-    const decrypted = await decryptChunk(dek, encBuf);
+    const decrypted = await decryptChunk(dekKey, encBuf);
 
     // Parse JSON
     const jsonStr = new TextDecoder('utf-8').decode(decrypted);

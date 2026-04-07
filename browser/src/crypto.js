@@ -105,15 +105,13 @@ async function unwrapDEK(kek, dekNonce, encryptedDek, dekAuthTag) {
  * Decrypt a single data chunk.
  * Chunk wire format: [nonce 12B][ciphertext N bytes][auth tag 16B]
  *
- * @param {Uint8Array} dek - 32-byte DEK
+ * @param {CryptoKey} dekKey - pre-imported DEK CryptoKey
  * @param {Uint8Array} chunkData - raw encrypted chunk (nonce + ct + tag)
  * @returns {Promise<Uint8Array>} decrypted plaintext
  */
-async function decryptChunk(dek, chunkData) {
+async function decryptChunk(dekKey, chunkData) {
     const nonce = chunkData.slice(0, SCEF.NONCE_SIZE);
     const ctAndTag = chunkData.slice(SCEF.NONCE_SIZE);
-
-    const dekKey = await importKey(dek, 'AES-GCM', ['decrypt']);
 
     try {
         const plaintext = await crypto.subtle.decrypt(
@@ -125,6 +123,15 @@ async function decryptChunk(dek, chunkData) {
     } catch (e) {
         throw new Error('Data chunk authentication failed (corrupted data)');
     }
+}
+
+/**
+ * Import DEK as a CryptoKey once for reuse across all chunk decryptions.
+ * @param {Uint8Array} dek - 32-byte DEK
+ * @returns {Promise<CryptoKey>}
+ */
+async function importDEKKey(dek) {
+    return importKey(dek, 'AES-GCM', ['decrypt']);
 }
 
 /**

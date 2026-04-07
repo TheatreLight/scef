@@ -135,10 +135,25 @@ function parseHeader(buffer) {
 }
 
 /**
- * Validate KDF parameters against acceptable bounds (DoS prevention).
- * Mirrors C++ validateKdfParamsAndDeriveKek() bounds check.
+ * Validate header fields against acceptable bounds before use.
+ * Checks structural fields (headerSize, blockSize, maxTableSize) and
+ * KDF parameters (DoS prevention). Called before HMAC verification —
+ * these fields are not yet authenticated, so bounds limit the damage
+ * an attacker-crafted header can cause.
  */
 function validateKdfParams(header) {
+    // Structural fields — must match expected values or be in safe ranges
+    if (header.headerSize !== SCEF.HEADER_SIZE) {
+        return 'Unexpected header size: ' + header.headerSize;
+    }
+    if (header.blockSize < 512 || header.blockSize > 64 * 1024 * 1024) {
+        return 'Block size out of range: ' + header.blockSize;
+    }
+    if (header.maxTableSize < SCEF.NONCE_SIZE + SCEF.AUTH_TAG_SIZE ||
+        header.maxTableSize > 64 * 1024 * 1024) {
+        return 'Max table size out of range: ' + header.maxTableSize;
+    }
+    // KDF parameters
     if (header.kdfMKib < SCEF.KDF_M_KIB_MIN || header.kdfMKib > SCEF.KDF_M_KIB_MAX) {
         return 'KDF memory parameter out of range';
     }

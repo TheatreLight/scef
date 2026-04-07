@@ -13,10 +13,11 @@
 const CONTAINER_FILENAME = 'container.scef';
 
 let containerFile   = null;   // File or Blob with .size
-let containerBlob   = null;   // raw Blob from fetch (used when File API unavailable)
-let activeHeader    = null;   // parsed header from the valid slot
-let activeSlotIndex = -1;     // which slot was used (0-3)
+let validSlots      = [];     // [{header, slotIndex}, ...] — all magic-valid slots
+let activeHeader    = null;   // parsed header from the authenticated slot
+let activeSlotIndex = -1;     // which slot passed HMAC (0-3)
 let activeDEK       = null;   // Uint8Array(32), set after successful unlock
+let activeDEKKey    = null;   // CryptoKey, imported once for all chunk decryptions
 let activeFileTable = null;   // { nextWriteOffset, files: [...] }
 
 function init() {
@@ -28,15 +29,11 @@ function init() {
     });
     UI.lockBtnEl.addEventListener('click', onLock);
 
-    // Try auto-loading container from same directory
     tryAutoLoad();
 }
 
 /**
  * Attempt to fetch container.scef from the same directory as index.html.
- * Works on: Firefox file://, any http(s):// context.
- * Fails on: Chrome/Edge file:// (CORS blocks fetch).
- * On failure: show file picker fallback.
  */
 async function tryAutoLoad() {
     UI.status('Looking for ' + CONTAINER_FILENAME + '...', 'info');
@@ -46,13 +43,9 @@ async function tryAutoLoad() {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const blob = await resp.blob();
 
-        // Wrap blob as a File-like object with .name and .size
-        containerBlob = blob;
         containerFile = new File([blob], CONTAINER_FILENAME);
-
         await validateAndPromptPassword();
     } catch (e) {
-        // Fetch failed — show file picker
         UI.status('Select ' + CONTAINER_FILENAME + ' from this folder.', 'info');
         UI.fileSectionEl.style.display = 'block';
     }
@@ -79,41 +72,41 @@ async function validateAndPromptPassword() {
     UI.status('Validating container...', 'info');
 
     try {
-        const result = await findValidSlot(containerFile);
-        activeHeader = result.header;
-        activeSlotIndex = result.slotIndex;
+        validSlots = await findValidSlots(containerFile);
+        // Use first slot for pre-auth checks (cipher ID)
+        const firstHeader = validSlots[0].header;
 
-        if (activeHeader.cipherId === SCEF.CIPHER_KUZNECHIK_GCM) {
+        if (firstHeader.cipherId === SCEF.CIPHER_KUZNECHIK_GCM) {
             UI.status('This container uses Kuznechik cipher, which is not supported in the browser viewer. Use the native CLI.', 'error');
             return;
         }
 
-        if (activeHeader.cipherId !== SCEF.CIPHER_AES_256_GCM) {
+        if (firstHeader.cipherId !== SCEF.CIPHER_AES_256_GCM) {
             UI.status('Unknown cipher. Use the native CLI.', 'error');
             return;
         }
 
-        // Hide file picker, show password prompt
         UI.fileSectionEl.style.display = 'none';
         UI.status('Container recognized. Enter password to unlock.', 'info');
         UI.showPasswordSection();
     } catch (err) {
         UI.status(err.message, 'error');
-        // Show file picker in case user picked a wrong file
         UI.fileSectionEl.style.display = 'block';
     }
 }
 
 /**
- * Read header from all 4 slot positions, return the first one with valid magic.
+ * Read headers from all 4 slot positions, return all with valid magic + KDF params.
+ * Actual HMAC verification happens in onUnlock (requires KEK).
  */
-async function findValidSlot(file) {
+async function findValidSlots(file) {
     const fileSize = file.size;
     if (fileSize < SCEF.HEADER_SIZE) {
         throw new Error('File is too small to be a SCEF container');
     }
 
     const slotOffsets = computeSlotOffsets(fileSize, SCEF.HEADER_SIZE);
+    const validSlots = [];
 
     for (let i = 0; i < SCEF.SLOT_COUNT; i++) {
         const offset = slotOffsets[i];
@@ -126,15 +119,18 @@ async function findValidSlot(file) {
         if (header !== null) {
             const kdfError = validateKdfParams(header);
             if (kdfError) continue;
-            return { header, slotIndex: i };
+            validSlots.push({ header, slotIndex: i });
         }
     }
 
-    throw new Error('Not a valid SCEF container');
+    if (validSlots.length === 0) {
+        throw new Error('Not a valid SCEF container');
+    }
+    return validSlots;
 }
 
 /**
- * Password unlock: derive KEK → verify HMAC → unwrap DEK → decrypt file table.
+ * Password unlock: derive KEK → verify HMAC → unwrap DEK → load container → decrypt file table.
  */
 async function onUnlock() {
     const password = UI.passwordInputEl.value;
@@ -146,45 +142,67 @@ async function onUnlock() {
     UI.unlockBtnEl.disabled = true;
 
     try {
-        // Check browser WASM memory limit before attempting KDF
-        if (activeHeader.kdfMKib > SCEF.KDF_M_KIB_BROWSER_MAX) {
-            const mMib = (activeHeader.kdfMKib / 1024).toFixed(0);
+        // Check browser WASM memory limit using first valid slot's KDF params
+        const firstHeader = validSlots[0].header;
+        if (firstHeader.kdfMKib > SCEF.KDF_M_KIB_BROWSER_MAX) {
+            const mMib = (firstHeader.kdfMKib / 1024).toFixed(0);
             UI.status('This container uses Argon2id with m=' + mMib + ' MiB, which exceeds the browser viewer limit. Use the native application to open this container.', 'error');
             return;
         }
 
-        // Step 1: Derive KEK via Argon2id
+        // Step 1: Derive KEK via Argon2id (once — all slots share the same salt/params)
         UI.status('Deriving key... this may take a moment.', 'info');
         await new Promise(r => setTimeout(r, 50));
 
         const kek = await deriveKEK(
             password,
-            activeHeader.salt,
-            activeHeader.kdfMKib,
-            activeHeader.kdfT,
-            activeHeader.kdfP
+            firstHeader.salt,
+            firstHeader.kdfMKib,
+            firstHeader.kdfT,
+            firstHeader.kdfP
         );
 
-        // Step 2: Verify HMAC (authenticate before decrypt)
+        // Step 2: Try all valid slots — find one that passes HMAC + DEK unwrap.
+        // Mirrors C++ readMeta() crash resilience: if slot 0 is corrupted,
+        // fall back to slot 1, 2, 3.
         UI.status('Verifying...', 'info');
-        const hmacOk = await verifyHeaderHMAC(
-            kek,
-            activeHeader.hmacProtectedBytes,
-            activeHeader.headerHmac
-        );
+        let recovered = false;
+        let lastError = '';
 
-        if (!hmacOk) {
+        for (const slot of validSlots) {
+            try {
+                const hmacOk = await verifyHeaderHMAC(
+                    kek,
+                    slot.header.hmacProtectedBytes,
+                    slot.header.headerHmac
+                );
+                if (!hmacOk) continue;
+
+                activeDEK = await unwrapDEK(
+                    kek,
+                    slot.header.dekNonce,
+                    slot.header.encryptedDek,
+                    slot.header.dekAuthTag
+                );
+                activeHeader = slot.header;
+                activeSlotIndex = slot.slotIndex;
+                recovered = true;
+                break;
+            } catch (err) {
+                lastError = err.message;
+            }
+        }
+
+        // Zero KEK — no longer needed (best-effort in JS)
+        kek.fill(0);
+
+        if (!recovered) {
             UI.status('Wrong password or corrupted container.', 'error');
             return;
         }
 
-        // Step 3: Unwrap DEK
-        activeDEK = await unwrapDEK(
-            kek,
-            activeHeader.dekNonce,
-            activeHeader.encryptedDek,
-            activeHeader.dekAuthTag
-        );
+        // Step 3: Import DEK as CryptoKey (once for all chunk decryptions)
+        activeDEKKey = await importDEKKey(activeDEK);
 
         // Step 4: Decrypt file table
         UI.status('Reading file table...', 'info');
@@ -193,12 +211,12 @@ async function onUnlock() {
             containerFile,
             activeHeader,
             slotOffsets[activeSlotIndex],
-            activeDEK
+            activeDEKKey
         );
 
         activeFileTable = fileTable;
 
-        // Show unlocked UI — container info + file list + lock button
+        // Show unlocked UI
         UI.showUnlockedState();
         UI.showHeaderInfo(activeHeader, activeSlotIndex);
         UI.showFileList(fileTable.files);
@@ -207,7 +225,7 @@ async function onUnlock() {
         attachDownloadHandlers();
 
     } catch (err) {
-        UI.status(err.message, 'error');
+        UI.status('Wrong password or container error.', 'error');
     } finally {
         UI.unlockBtnEl.disabled = false;
     }
@@ -215,33 +233,34 @@ async function onUnlock() {
 
 /**
  * Lock: clear DEK from memory, return to password prompt.
- * Container file reference is kept — user doesn't need to re-select.
  */
 function onLock() {
     if (activeDEK) {
         activeDEK.fill(0);
         activeDEK = null;
     }
+    activeDEKKey = null;
     activeFileTable = null;
 
-    // Keep containerFile and activeHeader — just re-prompt for password
     UI.showLockedState();
     UI.status('Container locked.', 'info');
     UI.showPasswordSection();
 }
 
 function resetState() {
+    validSlots = [];
     activeHeader = null;
     activeSlotIndex = -1;
     if (activeDEK) {
         activeDEK.fill(0);
         activeDEK = null;
     }
+    activeDEKKey = null;
     activeFileTable = null;
 }
 
 /**
- * Attach click handlers to download buttons and Extract All.
+ * Attach click handlers to download buttons and Download All as ZIP.
  */
 function attachDownloadHandlers() {
     const buttons = UI.fileListEl.querySelectorAll('.download-btn');
@@ -265,7 +284,7 @@ function attachDownloadHandlers() {
 
             disableAll();
             try {
-                await downloadFile(containerFile, activeHeader, fileEntry, activeDEK, slotOffsets);
+                await downloadFile(containerFile, activeHeader, fileEntry, activeDEKKey, slotOffsets);
             } catch (err) {
                 UI.status('Download failed: ' + err.message, 'error');
             } finally {
@@ -278,7 +297,7 @@ function attachDownloadHandlers() {
         extractAllBtn.addEventListener('click', async () => {
             disableAll();
             try {
-                await downloadAllAsZip(containerFile, activeHeader, activeFileTable.files, activeDEK, slotOffsets);
+                await downloadAllAsZip(containerFile, activeHeader, activeFileTable.files, activeDEKKey, slotOffsets);
             } catch (err) {
                 UI.status('Extract all failed: ' + err.message, 'error');
             } finally {
