@@ -1,6 +1,7 @@
 #include "FileManager.h"
 #include "Header.h"
 #include "KdfProfiles.h"
+#include "Logger.h"
 
 #include "botan/mem_ops.h"
 #include "botan/secmem.h"
@@ -10,8 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <ios>
 #include <iostream>
+#include <ios>
 #include <istream>
 #include <memory>
 #include <stdexcept>
@@ -66,6 +67,7 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
         readMeta();
     }
     slotOffsets_ = computeSlotOffsets();
+    LOG_DEBUG("FileMAnager successfully inited");
 }
 
 // ---- slot helpers ----
@@ -161,11 +163,14 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
         header_->setKdfMKib(params->m_kib);
         header_->setKdfT(params->t);
         header_->setKdfP(params->p);
+        LOG_DEBUG("setKdfParams: profile=%s, m=%u KiB, t=%u, p=%u",
+                  params->name, params->m_kib, params->t, params->p);
     } else {
         header_->setKdfProfile(EKDFProfile::None);
         header_->setKdfMKib(m_kib);
         header_->setKdfT(t);
         header_->setKdfP(p);
+        LOG_DEBUG("setKdfParams: custom, m=%u KiB, t=%u, p=%u", m_kib, t, p);
     }
 }
 
@@ -173,7 +178,10 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
 
 void FileManager::initCryptoForCreate() {
     crypto_->generateSalt(header_->getSaltData());
+    LOG_DEBUG("initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
+              header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
     crypto_->deriveKek(password_, *header_);
+    LOG_DEBUG("initCryptoForCreate: KEK derived, password length was %zu", password_.size());
 
     // Zero the password immediately after deriving the KEK.
     Botan::secure_scrub_memory(password_.data(), password_.size());
@@ -184,6 +192,9 @@ void FileManager::initCryptoForCreate() {
     std::array<uint8_t, DEK_SIZE>   encryptedDek{};
     std::array<uint8_t, AUTH_TAG_SIZE> dekAuthTag{};
     crypto_->wrapDek(dekNonce, encryptedDek, dekAuthTag);
+    LOG_DEBUG("initCryptoForCreate: DEK wrapped, nonce[0..2]=%02x%02x%02x, tag[0..2]=%02x%02x%02x",
+              dekNonce[0], dekNonce[1], dekNonce[2],
+              dekAuthTag[0], dekAuthTag[1], dekAuthTag[2]);
 
     header_->setDekNonce(dekNonce);
     header_->setEncryptedDek(encryptedDek);
@@ -257,7 +268,10 @@ void FileManager::verifyHeaderHmac() {
 uint64_t FileManager::computeAvailableDataCapacity() const {
     uint64_t containerSize = header_->getContainerSize();
     uint64_t slotReserved = header_->getHeaderSize() + header_->getMaxTableSize();
-    return containerSize - SLOT_COUNT * slotReserved;
+    uint64_t available = containerSize - SLOT_COUNT * slotReserved;
+    LOG_DEBUG("computeAvailableDataCapacity: container=%llu, slot_reserved=%llu x %zu, available=%llu",
+              containerSize, slotReserved, SLOT_COUNT, available);
+    return available;
 }
 
 uint64_t FileManager::computeRequiredDataBytes() const {
@@ -280,9 +294,14 @@ uint64_t FileManager::computeRequiredDataBytes() const {
         if (ec) {
             throw std::runtime_error("Cannot stat file '" + path + "': " + ec.message());
         }
-        required += encryptedSizeCalc(sz);
+        uint64_t enc = encryptedSizeCalc(sz);
+        LOG_DEBUG("computeRequiredDataBytes: file='%s', plain=%llu, encrypted=%llu",
+                  path.c_str(), sz, enc);
+        required += enc;
     }
 
+    LOG_DEBUG("computeRequiredDataBytes: %zu file(s), total required=%llu",
+              filesList_.size(), required);
     return required;
 }
 
@@ -293,6 +312,8 @@ void FileManager::createContainerFile() {
     uint32_t maxTableSize = header_->getMaxTableSize();
 
     uint64_t minSize = 4ULL * (header_->getHeaderSize() + maxTableSize);
+    LOG_DEBUG("createContainerFile: size=%llu, min=%llu, max=%llu, max_table=%u, path='%s'",
+              containerSize, minSize, MAX_CONTAINER_SIZE, maxTableSize, containerFilePath_.c_str());
     if (containerSize < minSize) {
         throw std::runtime_error(
             "Container size " + std::to_string(containerSize) +
@@ -313,9 +334,11 @@ void FileManager::createContainerFile() {
     }
     // TODO: replace flush() with fsync/FlushFileBuffers for real crash safety (spec 4.6.2)
     containerStream_->flush();
+    LOG_DEBUG("createContainerFile: pre-allocated %llu bytes successfully", containerSize);
 }
 
 void FileManager::writeHeaderAt(uint64_t slotOffset) {
+    LOG_DEBUG("FileManager::writeHeaderAt: slot_offset=%llu", slotOffset);
     containerStream_->seekp(static_cast<std::streamoff>(slotOffset), std::ios::beg);
     const char* buf = reinterpret_cast<const char*>(header_->buffer().data());
     if (!containerStream_->write(buf, HEADER_SIZE).good()) {
@@ -326,6 +349,8 @@ void FileManager::writeHeaderAt(uint64_t slotOffset) {
 
 void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>& encryptedTable) {
     uint64_t tableOffset = slotOffset + header_->getHeaderSize();
+    LOG_DEBUG("FileManager::writeFileTableAt: slot_offset=%llu, table_offset=%llu, encrypted_table_size=%zu",
+              slotOffset, tableOffset, encryptedTable.size());
     containerStream_->seekp(static_cast<std::streamoff>(tableOffset), std::ios::beg);
 
     if (!encryptedTable.empty()) {
@@ -453,6 +478,8 @@ void FileManager::readMeta() {
     for (size_t i = 1; i < SLOT_COUNT; ++i) {
         offsets[i] = computeSlotOffset(fileSize, SLOT_PERCENTAGES[i], HEADER_SIZE);
     }
+    LOG_DEBUG("readMeta: file_size=%llu, slot offsets=[%llu, %llu, %llu, %llu]",
+              fileSize, offsets[0], offsets[1], offsets[2], offsets[3]);
 
     bool recovered  = false;
     bool kekDerived = false;   // true once validateKdfParamsAndDeriveKek() succeeds
@@ -471,10 +498,13 @@ void FileManager::readMeta() {
         uint64_t slotOff = offsets[i];
 
         if (!trySlotMagic(slotOff)) {
+            LOG_DEBUG("readMeta: slot %zu at offset %llu — bad magic or unreadable", i, slotOff);
             continue; // Bad magic or unreadable — try next slot.
         }
 
         slotsWithValidMagic++;
+        LOG_DEBUG("readMeta: slot %zu at offset %llu — valid magic, m=%u KiB, t=%u, p=%u",
+                  i, slotOff, header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
 
         // Re-derivation check: if we already have a KEK but a previous slot
         // failed auth, check whether THIS slot has different KDF inputs (salt
@@ -503,6 +533,7 @@ void FileManager::readMeta() {
                 kekMKib = header_->getKdfMKib();
                 kekT    = header_->getKdfT();
                 kekP    = header_->getKdfP();
+                LOG_DEBUG("readMeta: KEK derived (derivation #%d)", kekDerivations);
             }
             // KEK is ready.  Authenticate first (HMAC), then decrypt (DEK unwrap).
             // Authenticate-then-decrypt: verifying the HMAC before touching the
@@ -511,9 +542,11 @@ void FileManager::readMeta() {
             unwrapDekFromHeader();
             activeSlotOffset_ = slotOff;
             recovered = true;
+            LOG_DEBUG("readMeta: recovered from slot %zu at offset %llu", i, slotOff);
             break;
         } catch (const std::exception& ex) {
             lastError = ex.what();
+            LOG_DEBUG("readMeta: slot %zu auth failed: %s", i, ex.what());
             // If the KEK was derived but auth failed, the KEK-source slot's salt
             // might have been corrupted.  We defer the re-derivation decision to
             // the NEXT slot: when trySlotMagic() loads slot i+1, we compare its
@@ -544,6 +577,8 @@ void FileManager::readMeta() {
     }
 
     readFilesTable();
+    LOG_DEBUG("readMeta: complete, %zu file(s) in table, container_size=%llu",
+              fileTable_.getFilesTable().size(), header_->getContainerSize());
 }
 
 void FileManager::extract(const std::string& pathToOutputFolder) {
@@ -557,6 +592,11 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
     };
 
     // If no specific files were requested (-f not given), extract all files.
+    size_t totalFiles = filesList_.empty() ? fileTable_.getFilesTable().size() : filesList_.size();
+    LOG_DEBUG("extract: output='%s', files requested=%zu (0=all)",
+              pathToOutputFolder.c_str(), filesList_.size());
+
+    size_t extracted = 0;
     if (filesList_.empty()) {
         for (const FileEntry& fEntry : fileTable_.getFilesTable()) {
             std::string safeName = safeFilename(fEntry.name);
@@ -565,12 +605,16 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
             if (!output.is_open()) {
                 throw std::runtime_error("Cannot open output file: " + outputPath);
             }
+            LOG_DEBUG("extract: '%s' size=%llu, chunks=%u, offset=%llu",
+                      fEntry.name.c_str(), (unsigned long long)fEntry.size,
+                      fEntry.chunks, (unsigned long long)fEntry.offset);
             readChunks(output, fEntry);
             if (!checkSumVerify(fEntry)) {
-                printf("FileManager: File '%s' decrypted unsuccessfully, wrong checksum\n",
-                       fEntry.name.c_str());
+                LOG_WARN("FileManager: File '%s' decrypted unsuccessfully, wrong checksum",
+                         fEntry.name.c_str());
             }
             output.close();
+            extracted++;
         }
     } else {
         for (const std::string& fName : filesList_) {
@@ -581,17 +625,23 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
                 throw std::runtime_error("Cannot open output file: " + outputPath);
             }
             const FileEntry& fEntry = fileTable_.getFileInfoByName(fName);
+            LOG_DEBUG("extract: '%s' size=%llu, chunks=%u, offset=%llu",
+                      fEntry.name.c_str(), (unsigned long long)fEntry.size,
+                      fEntry.chunks, (unsigned long long)fEntry.offset);
             readChunks(output, fEntry);
             if (!checkSumVerify(fEntry)) {
-                printf("FileManager: File '%s' decrypted unsuccessfully, wrong checksum\n",
-                       fName.c_str());
+                LOG_WARN("FileManager: File '%s' decrypted unsuccessfully, wrong checksum",
+                         fName.c_str());
             }
             output.close();
+            extracted++;
         }
     }
+    LOG_DEBUG("extract: complete, %zu/%zu file(s) extracted", extracted, totalFiles);
 }
 
 void FileManager::write() {
+    LOG_DEBUG("FileManager::write: enter");
     if (filesList_.empty()) {
         throw std::runtime_error("No input files specified for create");
     }
@@ -621,9 +671,11 @@ void FileManager::write() {
 
 void FileManager::add() {
     // Resume from the persisted end-of-data position.
-    
+
     uint64_t dataEnd = fileTable_.getNextWriteOffset();
     uint64_t containerSize = header_->getContainerSize();
+    LOG_DEBUG("add: %zu file(s) to add, data_end=%llu, container_size=%llu",
+              filesList_.size(), dataEnd, containerSize);
     if (dataEnd >= containerSize) {
         throw std::runtime_error("Container is full: no free space for additional files");
     }
@@ -642,6 +694,8 @@ void FileManager::add() {
 
     uint64_t freeCapacity = (containerSize - dataEnd) - totalReserved;
     uint64_t required = computeRequiredDataBytes();
+    LOG_DEBUG("add: free_capacity=%llu, required=%llu, reserved_by_slots=%llu",
+              freeCapacity, required, totalReserved);
     if (required > freeCapacity) {
         throw std::runtime_error(
             "Files too large for remaining container space: need " +
@@ -652,16 +706,18 @@ void FileManager::add() {
     size_t endPos = writeChunks(static_cast<size_t>(dataEnd));
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     writeFileTableToAllSlots();
+    LOG_DEBUG("add: complete, new data_end=%zu, file_count=%zu",
+              endPos, fileTable_.getFilesTable().size());
 }
 
 // ---- print helpers ----
 
 void FileManager::printHeader() const {
-    std::cout << header_->to_string() << std::endl;
+    std::cout << header_->to_string();
 }
 
 void FileManager::printFilesTable() const {
-    std::cout << fileTable_.to_string() << std::endl;
+    std::cout << fileTable_.to_string();
 }
 
 // ---- private helpers ----
@@ -726,6 +782,11 @@ void FileManager::readHeader() {
         throw std::runtime_error("Failed to read header");
     }
     header_->read(headerBuffer);
+    LOG_DEBUG("readHeader: container_size=%llu, block_size=%u, "
+              "file_table_size=%u, max_table_size=%u, kdf(m=%u KiB, t=%u, p=%u)",
+              header_->getContainerSize(), header_->getChunkSize(),
+              header_->getFileTableSize(), header_->getMaxTableSize(),
+              header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
 }
 
 void FileManager::readFilesTable() {
@@ -735,7 +796,9 @@ void FileManager::readFilesTable() {
 
     // Spec 4.2.4: file_table_size includes nonce (12) + ciphertext + auth tag (16).
     uint32_t encSize = header_->getFileTableSize();
+    LOG_DEBUG("readFilesTable: table_offset=%llu, enc_size=%u", tableOffset, encSize);
     if (encSize <= NONCE_SIZE + AUTH_TAG_SIZE) {
+        LOG_DEBUG("readFilesTable: table empty (enc_size <= overhead), skipping");
         return;
     }
     size_t plainSize = encSize - NONCE_SIZE - AUTH_TAG_SIZE;
@@ -750,6 +813,8 @@ void FileManager::readFilesTable() {
     std::string decrypted(plainSize, '\0');
     crypto_->decrypt(ptr, decrypted.data(), plainSize);
     fileTable_.deserialize(decrypted);
+    LOG_DEBUG("readFilesTable: decrypted %zu bytes, %zu file(s) loaded",
+              plainSize, fileTable_.getFilesTable().size());
 }
 
 void FileManager::readChunks(std::ofstream& output, const FileEntry& file) {

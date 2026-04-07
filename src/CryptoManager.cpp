@@ -1,5 +1,6 @@
 #include "CryptoManager.h"
 #include "Header.h"
+#include "Logger.h"
 
 #include "botan/aead.h"
 #include "botan/auto_rng.h"
@@ -23,6 +24,9 @@ CryptoManager::~CryptoManager() {
 }
 
 void CryptoManager::deriveKek(const std::string& password, Header& header) {
+    LOG_DEBUG("deriveKek: Argon2id(m=%u KiB, t=%u, p=%u), password_len=%zu, salt[0..2]=%02x%02x%02x",
+              header.getKdfMKib(), header.getKdfT(), header.getKdfP(), password.size(),
+              header.getSaltData()[0], header.getSaltData()[1], header.getSaltData()[2]);
     auto pwdhash_fam = Botan::PasswordHashFamily::create("Argon2id");
     if (!pwdhash_fam) {
         throw std::runtime_error("Argon2id not available in this Botan build");
@@ -33,6 +37,7 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
                         header.getSaltData().data(), header.getSaltData().size());
     kek_ready_ = true;
     dek_ready_ = false; // KEK changed; DEK must be re-derived via unwrapDek.
+    LOG_DEBUG("deriveKek: KEK ready, kek[0..2]=%02x%02x%02x", kek_[0], kek_[1], kek_[2]);
 }
 
 void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out,
@@ -68,6 +73,9 @@ void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out,
     }
     std::copy(buf.begin(), buf.begin() + DEK_SIZE, encrypted_dek_out.begin());
     std::copy(buf.begin() + DEK_SIZE, buf.end(), dek_auth_tag_out.begin());
+    LOG_DEBUG("wrapDek: DEK generated and wrapped, nonce[0..2]=%02x%02x%02x, tag[0..2]=%02x%02x%02x",
+              dek_nonce_out[0], dek_nonce_out[1], dek_nonce_out[2],
+              dek_auth_tag_out[0], dek_auth_tag_out[1], dek_auth_tag_out[2]);
 }
 
 void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
@@ -102,6 +110,8 @@ void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
     }
     std::copy(buf.begin(), buf.end(), dek_.begin());
     dek_ready_ = true;
+    LOG_DEBUG("unwrapDek: DEK decrypted successfully, dek[0..2]=%02x%02x%02x",
+              dek_[0], dek_[1], dek_[2]);
 }
 
 std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data,
@@ -118,6 +128,8 @@ std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data,
     auto digest = mac->final();
     std::array<uint8_t, 32> result{};
     std::copy(digest.begin(), digest.end(), result.begin());
+    LOG_DEBUG("computeHmac: input_size=%zu, hmac[0..2]=%02x%02x%02x",
+              size, result[0], result[1], result[2]);
     return result;
 }
 
@@ -150,6 +162,8 @@ void CryptoManager::encrypt(const char* data, char* output, size_t dataSize) {
 
     // buf: dataSize bytes ciphertext + 16 bytes auth tag.
     std::memcpy(output, buf.data(), buf.size());
+    LOG_DEBUG("encrypt: plain_size=%zu, nonce[0..2]=%02x%02x%02x",
+              dataSize, nonce[0], nonce[1], nonce[2]);
 }
 
 void CryptoManager::generateSalt(std::array<uint8_t, 32>& salt) {
@@ -191,4 +205,6 @@ void CryptoManager::decrypt(const char* data, char* output, size_t dataSize) {
     }
 
     std::memcpy(output, buf.data(), dataSize);
+    LOG_DEBUG("decrypt: plain_size=%zu, nonce[0..2]=%02x%02x%02x",
+              dataSize, nonce[0], nonce[1], nonce[2]);
 }
