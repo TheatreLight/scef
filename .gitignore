@@ -20,6 +20,9 @@ __pycache__/
 # Test data (large personal files, not tracked)
 tests/integration/test_data/
 
+# Logs
+**/logs/
+
 # OS
 Thumbs.db
 .DS_Store
