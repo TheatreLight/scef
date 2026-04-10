@@ -85,7 +85,7 @@ scef/
 │   └── enums/
 │       ├── ECiphers.h      — ECipher enum (AES_256_GCM, Kuznechik_GCM)
 │       ├── EKDF.h          — EKDF enum (Argon2id)
-│       └── EKDFProfile.h   — EKDFProfile enum (FastAccess, Standard, HighSecurity, Browser)
+│       └── EKDFProfile.h   — EKDFProfile enum (Browser, Fast, Standard, High)
 ├── src/                    — implementation
 │   ├── main.cpp            — CLI entry point
 │   ├── Header.cpp          — header parse/serialize/HMAC

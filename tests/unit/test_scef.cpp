@@ -540,10 +540,10 @@ TEST(EnumSpecTest, KuznechikGCM_EnumValueExists) {
 
 TEST(EnumSpecTest, KDFProfiles_AllFourDefined) {
     // Spec: 4 predefined profiles at values 1-4; no gap.
-    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::FastAccess),   1u);
-    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Standard),     2u);
-    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::HighSecurity), 3u);
-    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Browser),      4u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Browser),  1u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Fast),     2u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::Standard), 3u);
+    EXPECT_EQ(static_cast<uint16_t>(EKDFProfile::High),     4u);
 }
 
 // ===========================================================================

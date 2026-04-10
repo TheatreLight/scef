@@ -191,22 +191,13 @@ static int resolveKdfParams(const ParsedArgs& args,
 }
 
 static void printKdfSelection(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p) {
-    const KdfProfileParams* info = getProfileParams(profile);
-    std::string label = (info != nullptr) ? info->name : "custom";
-    // Capitalize first letter for display.
-    if (!label.empty()) {
-        label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(label[0])));
-    }
-    if (profile == EKDFProfile::Standard) {
-        label = "Standard";
-    } else if (profile == EKDFProfile::FastAccess) {
-        label = "Fast Access";
-    } else if (profile == EKDFProfile::HighSecurity) {
-        label = "High Security";
-    } else if (profile == EKDFProfile::Browser) {
-        label = "Browser";
-    } else {
-        label = "Custom";
+    std::string label;
+    switch (profile) {
+        case EKDFProfile::Standard: label = "Standard"; break;
+        case EKDFProfile::Fast:     label = "Fast";     break;
+        case EKDFProfile::High:     label = "High";     break;
+        case EKDFProfile::Browser:  label = "Browser";  break;
+        default:                    label = "Custom";   break;
     }
     std::cout << "KDF: " << label
               << " (m=" << (m_kib / 1024) << " MiB"
@@ -255,10 +246,10 @@ static int cmd_benchmark() {
 
     // Profile list ordered for display.
     constexpr std::array<EKDFProfile, 4> order = {
-        EKDFProfile::FastAccess,
-        EKDFProfile::Standard,
-        EKDFProfile::HighSecurity,
         EKDFProfile::Browser,
+        EKDFProfile::Fast,
+        EKDFProfile::Standard,
+        EKDFProfile::High,
     };
 
     std::vector<Row> rows;

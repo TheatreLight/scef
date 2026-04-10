@@ -63,11 +63,12 @@ QString ScefController::createContainer(const QString& destDir,
     // Map profile index (0–3 = named profiles, 4 = custom) to EKDFProfile.
     EKDFProfile profile;
     switch (kdfProfileIndex) {
-        case 1:  profile = EKDFProfile::FastAccess;   break;
-        case 2:  profile = EKDFProfile::HighSecurity; break;
-        case 3:  profile = EKDFProfile::Browser;      break;
-        case 4:  profile = EKDFProfile::None;         break;
-        default: profile = EKDFProfile::Standard;     break;  // index 0 = Standard
+        case 0:  profile = EKDFProfile::Standard; break;
+        case 1:  profile = EKDFProfile::Fast;     break;
+        case 2:  profile = EKDFProfile::High;     break;
+        case 3:  profile = EKDFProfile::Browser;  break;
+        case 4:  profile = EKDFProfile::None;     break;
+        default: profile = EKDFProfile::Standard; break;
     }
 
     // Pre-validate synchronously (init checks size before creating file)

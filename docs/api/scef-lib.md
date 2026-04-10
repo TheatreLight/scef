@@ -387,10 +387,10 @@ struct KdfProfileParams {
 
 | Profile | name | m_kib | t | p |
 |---------|------|-------|---|---|
-| `FastAccess` | `"fast"` | 19456 | 2 | 1 |
-| `Standard` | `"default"` | 65536 | 3 | 4 |
-| `HighSecurity` | `"high"` | 262144 | 5 | 8 |
-| `Browser` | `"browser"` | 47104 | 1 | 1 |
+| `Browser` | `"browser"` | 65536 | 1 | 1 |
+| `Fast` | `"fast"` | 262144 | 1 | 4 |
+| `Standard` | `"default"` | 1048576 | 1 | 4 |
+| `High` | `"high"` | 2097152 | 1 | 4 |
 
 ---
 
@@ -461,11 +461,11 @@ enum class EKDF : uint8_t {
 
 ```cpp
 enum class EKDFProfile : uint16_t {
-    None         = 0x0000,  // custom params
-    FastAccess   = 0x0001,
-    Standard     = 0x0002,
-    HighSecurity = 0x0003,
-    Browser      = 0x0004,
+    None     = 0x0000,  // custom params
+    Browser  = 0x0001,
+    Fast     = 0x0002,
+    Standard = 0x0003,
+    High     = 0x0004,
 };
 ```
 

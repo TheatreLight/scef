@@ -13,10 +13,10 @@ Page {
     // KDF profile definitions: [label, description, m_mib, t, p]
     // Index corresponds to kdfProfileIndex passed to controller (0=Standard, 1=Fast, 2=High, 3=Browser, 4=Custom)
     readonly property var kdfProfiles: [
-        { label: "Standard (recommended)", desc: "Balanced security and speed (64 MiB, ~1s)",  m: 64,  t: 3, p: 4 },
-        { label: "Fast Access",            desc: "Minimal delay, lower security (19 MiB)",      m: 19,  t: 2, p: 1 },
-        { label: "High Security",          desc: "Maximum native protection (256 MiB, ~6s)",    m: 256, t: 5, p: 8 },
-        { label: "Browser",                desc: "Optimized for browser decryption (46 MiB)",   m: 46,  t: 1, p: 1 }
+        { label: "Standard (recommended)", desc: "Default profile (1024 MiB, t=1, p=4, ~0.6-1.1s)",                    m: 1024, t: 1, p: 4 },
+        { label: "Fast",                   desc: "Quick access, weaker hardware (256 MiB, t=1, p=4, ~0.1-0.3s)",        m: 256,  t: 1, p: 4 },
+        { label: "High",                   desc: "Maximum protection, 8+ GB RAM (2048 MiB, t=1, p=4, ~1.2-1.9s)",       m: 2048, t: 1, p: 4 },
+        { label: "Browser",                desc: "Optimized for WASM decryption (64 MiB, t=1, p=1, ~0.1s)",             m: 64,   t: 1, p: 1 }
     ]
 
     FileDialog {
@@ -287,7 +287,7 @@ Page {
                         Layout.fillWidth: true
                         from: 8
                         to: 4096
-                        value: 64
+                        value: 1024
                         editable: true
                         onValueModified: kdfProfileCombo.currentIndex = createPageRoot.kdfProfiles.length  // Custom
                     }
@@ -299,7 +299,7 @@ Page {
                         Layout.fillWidth: true
                         from: 1
                         to: 100
-                        value: 3
+                        value: 1
                         editable: true
                         onValueModified: kdfProfileCombo.currentIndex = createPageRoot.kdfProfiles.length  // Custom
                     }

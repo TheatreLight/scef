@@ -45,7 +45,7 @@ Total size: **4096 bytes**.
 | `0x0008` | 4 | `header_size` | `uint32_le` | `4096` |
 | `0x000C` | 1 | `cipher_id` | `uint8` | `0x01` = AES-256-GCM, `0x02` = Kuznechik-GCM |
 | `0x000D` | 1 | `kdf_id` | `uint8` | `0x01` = Argon2id |
-| `0x000E` | 2 | `kdf_profile_id` | `uint16_le` | `0` = custom, `1` = FastAccess, `2` = Standard, `3` = HighSecurity, `4` = Browser |
+| `0x000E` | 2 | `kdf_profile_id` | `uint16_le` | `0` = custom, `1` = Browser, `2` = Fast, `3` = Standard, `4` = High |
 | `0x0010` | 4 | `kdf_m_kib` | `uint32_le` | Argon2id memory in KiB |
 | `0x0014` | 4 | `kdf_t` | `uint32_le` | Argon2id iterations |
 | `0x0018` | 4 | `kdf_p` | `uint32_le` | Argon2id parallelism |
@@ -82,10 +82,10 @@ Source: `src/KdfProfiles.cpp:7-11`
 
 | Profile | ID | CLI name | m (KiB) | t | p | Approx time |
 |---------|----|----------|---------|---|---|-------------|
-| FastAccess | `0x0001` | `fast` | 19456 (19 MiB) | 2 | 1 | ~0.3-0.7s |
-| Standard | `0x0002` | `default` | 65536 (64 MiB) | 3 | 4 | ~0.8-1.5s |
-| HighSecurity | `0x0003` | `high` | 262144 (256 MiB) | 5 | 8 | ~4-10s |
-| Browser | `0x0004` | `browser` | 47104 (46 MiB) | 1 | 1 | ~0.5-1.0s (WASM) |
+| Browser | `0x0001` | `browser` | 65536 (64 MiB) | 1 | 1 | ~0.1s (WASM) |
+| Fast | `0x0002` | `fast` | 262144 (256 MiB) | 1 | 4 | ~0.1-0.3s |
+| Standard | `0x0003` | `default` | 1048576 (1024 MiB) | 1 | 4 | ~0.6-1.1s |
+| High | `0x0004` | `high` | 2097152 (2048 MiB) | 1 | 4 | ~1.2-1.9s |
 | Custom | `0x0000` | — | user-specified | user | user | varies |
 
 Default when `--kdf-profile` is not specified: **Standard** (`default`).
