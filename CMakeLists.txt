@@ -66,6 +66,8 @@ add_library(scef_lib STATIC
     src/FileTable.cpp
     src/KdfProfiles.cpp
     src/Logger.cpp
+    src/EncryptPipeline.cpp
+    src/DecryptPipeline.cpp
 )
 
 target_include_directories(scef_lib PUBLIC

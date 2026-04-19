@@ -55,8 +55,16 @@ public:
     // The output buffer must be at least dataSize bytes.
     void decrypt(const char* data, char* output, size_t dataSize);
 
+    // Fast-path: use pre-initialized CryptoContext (for pipeline workers).
+    void encrypt(struct CryptoContext& ctx, const char* data, char* output, size_t dataSize);
+    void decrypt(struct CryptoContext& ctx, const char* data, char* output, size_t dataSize);
+
     // Generate a cryptographically random 32-byte salt.
     void generateSalt(std::array<uint8_t, 32>& salt);
+
+    const uint8_t* getDek() const { return dek_.data(); }
+    size_t getDekSize() const { return DEK_SIZE; }
+    bool isDekReady() const { return dek_ready_; }
 
 private:
     // Derived key-encryption key (32 bytes). Zeroed on destruction.

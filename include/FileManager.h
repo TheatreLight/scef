@@ -2,6 +2,7 @@
 #define FILE_MANAGER_H
 
 #include "CryptoManager.h"
+#include "FragmentedIO.h"
 #include "Header.h"
 #include "FileTable.h"
 #include "KdfProfiles.h"
@@ -28,6 +29,17 @@ constexpr std::array<size_t, SLOT_COUNT> SLOT_PERCENTAGES = {0, 25, 50, 75};
                                                    uint32_t header_size) {
     if (percent == 0) return 0;
     return (container_size * percent / 100 / header_size) * header_size;
+}
+
+// Compute all four slot offsets from a container (or file) size and header size.
+// Uses the same formula as computeSlotOffset for each percentage in SLOT_PERCENTAGES.
+[[nodiscard]] inline std::array<uint64_t, SLOT_COUNT>
+computeSlotOffsets(uint64_t containerOrFileSize, uint32_t headerSize) {
+    std::array<uint64_t, SLOT_COUNT> out{};
+    for (size_t i = 1; i < SLOT_COUNT; ++i) {
+        out[i] = (containerOrFileSize * SLOT_PERCENTAGES[i] / 100 / headerSize) * headerSize;
+    }
+    return out;
 }
 
 class FileManager {
@@ -110,6 +122,10 @@ private:
     void writeFileTableAt(uint64_t slot_offset, const std::vector<char>& encrypted_table);
 
     size_t writeChunks(size_t startOffset);
+
+    // Build a FragmentedIO facade that routes pipeline reads/writes through
+    // this FileManager's containerStream_, skipping over slot areas.
+    FragmentedIO makeFragmentedIO();
 
     // Return the total number of bytes available for encrypted data blocks,
     // i.e. container_size minus the four slot reserved areas

@@ -286,3 +286,4 @@ void ScefController::scrubPassword()
         currentPassword_.clear();
     }
 }
+

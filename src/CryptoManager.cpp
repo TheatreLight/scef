@@ -1,4 +1,5 @@
 #include "CryptoManager.h"
+#include "CryptoContext.h"
 #include "Header.h"
 #include "Logger.h"
 
@@ -207,4 +208,50 @@ void CryptoManager::decrypt(const char* data, char* output, size_t dataSize) {
     std::memcpy(output, buf.data(), dataSize);
     LOG_DEBUG("decrypt: plain_size=%zu, nonce[0..2]=%02x%02x%02x",
               dataSize, nonce[0], nonce[1], nonce[2]);
+}
+
+void CryptoManager::encrypt(CryptoContext& ctx, const char* data, char* output, size_t dataSize) {
+    if (!dek_ready_) {
+        throw std::runtime_error("CryptoManager: DEK not ready; call wrapDek() or unwrapDek() first");
+    }
+
+    std::array<uint8_t, NONCE_SIZE> nonce{};
+    ctx.rng.randomize(nonce.data(), nonce.size());
+    std::memcpy(output, nonce.data(), NONCE_SIZE);
+    output += NONCE_SIZE;
+
+    ctx.buf.assign(reinterpret_cast<const uint8_t*>(data),
+                   reinterpret_cast<const uint8_t*>(data) + dataSize);
+    ctx.cipher->set_associated_data(std::span<const uint8_t>{});
+    ctx.cipher->start(nonce.data(), nonce.size());
+    ctx.cipher->finish(ctx.buf);
+
+    std::memcpy(output, ctx.buf.data(), ctx.buf.size());
+}
+
+void CryptoManager::decrypt(CryptoContext& ctx, const char* data, char* output, size_t dataSize) {
+    if (!dek_ready_) {
+        throw std::runtime_error("CryptoManager: DEK not ready; call wrapDek() or unwrapDek() first");
+    }
+
+    std::array<uint8_t, NONCE_SIZE> nonce{};
+    std::memcpy(nonce.data(), data, NONCE_SIZE);
+    data += NONCE_SIZE;
+
+    size_t enc_size = dataSize + AUTH_TAG_SIZE;
+    ctx.buf.assign(reinterpret_cast<const uint8_t*>(data),
+                   reinterpret_cast<const uint8_t*>(data) + enc_size);
+    ctx.cipher->set_associated_data(std::span<const uint8_t>{});
+    ctx.cipher->start(nonce.data(), nonce.size());
+
+    try {
+        ctx.cipher->finish(ctx.buf);
+    } catch (const Botan::Invalid_Authentication_Tag&) {
+        throw std::runtime_error("Data block authentication failed");
+    }
+
+    if (ctx.buf.size() != dataSize) {
+        throw std::runtime_error("Unexpected decrypted size");
+    }
+    std::memcpy(output, ctx.buf.data(), dataSize);
 }

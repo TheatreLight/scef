@@ -1,4 +1,6 @@
 #include "FileManager.h"
+#include "DecryptPipeline.h"
+#include "EncryptPipeline.h"
 #include "Header.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -16,6 +19,13 @@
 #include <istream>
 #include <memory>
 #include <stdexcept>
+#include <thread>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <winioctl.h>
+#endif
 
 FileManager::FileManager() {
     header_ = std::make_unique<Header>();
@@ -41,8 +51,9 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
         header_->setContainerSize(containerSize);
     }
 
+    slotOffsets_ = computeSlotOffsets();  // create path uses the param-provided size
+
     if (createNew && !filesList.empty()) {
-        slotOffsets_ = computeSlotOffsets();
         uint64_t available = computeAvailableDataCapacity();
         uint64_t required  = computeRequiredDataBytes();
         if (required > available) {
@@ -65,20 +76,15 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
 
     if (!createNew) {
         readMeta();
+        slotOffsets_ = computeSlotOffsets();  // recompute from authenticated header
     }
-    slotOffsets_ = computeSlotOffsets();
-    LOG_DEBUG("FileMAnager successfully inited");
+    LOG_DEBUG("FileManager successfully initialized");
 }
 
 // ---- slot helpers ----
 
 std::array<uint64_t, SLOT_COUNT> FileManager::computeSlotOffsets() const {
-    std::array<uint64_t, SLOT_COUNT> offsets{0};
-    for (size_t i = 1; i < SLOT_COUNT; ++i) {
-        offsets[i] = (header_->getContainerSize() * i * 25 / 100 / header_->getHeaderSize())
-            * header_->getHeaderSize();
-    }
-    return offsets;
+    return ::computeSlotOffsets(header_->getContainerSize(), HEADER_SIZE);
 }
 
 bool FileManager::overlapsSlot(uint64_t pos, uint64_t size,
@@ -118,9 +124,9 @@ uint64_t FileManager::writeFragmented(const char* data, size_t size) {
     size_t written = 0;
     while (written < size) {
         // Skip past any slot the current write position is inside.
-        int64_t cur = skipSlots(containerStream_->tellp());
-        if (cur != containerStream_->tellp()) {
-            containerStream_->seekp(cur, std::ios::beg);
+        uint64_t cur = skipSlots(static_cast<uint64_t>(containerStream_->tellp()));
+        if (cur != static_cast<uint64_t>(containerStream_->tellp())) {
+            containerStream_->seekp(static_cast<std::streamoff>(cur), std::ios::beg);
         }
 
         size_t canWrite = bytesUntilNextSlot(cur, size - written);
@@ -137,9 +143,9 @@ void FileManager::readFragmented(char* buf, size_t size) {
     size_t totalRead = 0;
     while (totalRead < size) {
         // Skip past any slot the current read position is inside.
-        int64_t cur = skipSlots(containerStream_->tellg());
-        if (cur != containerStream_->tellg()) {
-            containerStream_->seekg(cur, std::ios::beg);
+        uint64_t cur = skipSlots(static_cast<uint64_t>(containerStream_->tellg()));
+        if (cur != static_cast<uint64_t>(containerStream_->tellg())) {
+            containerStream_->seekg(static_cast<std::streamoff>(cur), std::ios::beg);
         }
 
         size_t canRead = bytesUntilNextSlot(cur, size - totalRead);
@@ -267,8 +273,14 @@ void FileManager::verifyHeaderHmac() {
 // ---- capacity helpers ----
 uint64_t FileManager::computeAvailableDataCapacity() const {
     uint64_t containerSize = header_->getContainerSize();
-    uint64_t slotReserved = header_->getHeaderSize() + header_->getMaxTableSize();
-    uint64_t available = containerSize - SLOT_COUNT * slotReserved;
+    uint64_t slotReserved  = header_->getHeaderSize() + header_->getMaxTableSize();
+    uint64_t slotTotal     = SLOT_COUNT * slotReserved;
+    if (containerSize <= slotTotal) {
+        LOG_DEBUG("computeAvailableDataCapacity: container=%llu <= slot_total=%llu, available=0",
+                  containerSize, slotTotal);
+        return 0;
+    }
+    uint64_t available = containerSize - slotTotal;
     LOG_DEBUG("computeAvailableDataCapacity: container=%llu, slot_reserved=%llu x %zu, available=%llu",
               containerSize, slotReserved, SLOT_COUNT, available);
     return available;
@@ -324,6 +336,29 @@ void FileManager::createContainerFile() {
             "Container size " + std::to_string(containerSize) +
             " exceeds the maximum of " + std::to_string(MAX_CONTAINER_SIZE) + " bytes");
     }
+
+#ifdef _WIN32
+    // Mark file as sparse so that seeking to the end and writing one byte
+    // does NOT trigger NTFS zero-fill of the entire region.  On a 13 GB
+    // container over USB this avoids ~50-60 minutes of zero writes.
+    // Best-effort: if the filesystem doesn't support sparse (e.g. exFAT),
+    // we fall back to the default behavior.
+    {
+        HANDLE h = CreateFileA(containerFilePath_.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD br = 0;
+            BOOL ok = DeviceIoControl(h, FSCTL_SET_SPARSE,
+                                      nullptr, 0, nullptr, 0, &br, nullptr);
+            CloseHandle(h);
+            LOG_DEBUG("createContainerFile: FSCTL_SET_SPARSE %s",
+                      ok ? "succeeded" : "not supported on this filesystem");
+        }
+    }
+#endif
 
     // Pre-allocate: seek to last byte and write one zero byte.
     containerStream_->seekp(static_cast<std::streamoff>(containerSize - 1), std::ios::beg);
@@ -474,10 +509,7 @@ void FileManager::readMeta() {
         throw std::runtime_error("Invalid container: file is empty");
     }
 
-    std::array<uint64_t, SLOT_COUNT> offsets{};
-    for (size_t i = 1; i < SLOT_COUNT; ++i) {
-        offsets[i] = computeSlotOffset(fileSize, SLOT_PERCENTAGES[i], HEADER_SIZE);
-    }
+    std::array<uint64_t, SLOT_COUNT> offsets = ::computeSlotOffsets(fileSize, HEADER_SIZE);
     LOG_DEBUG("readMeta: file_size=%llu, slot offsets=[%llu, %llu, %llu, %llu]",
               fileSize, offsets[0], offsets[1], offsets[2], offsets[3]);
 
@@ -582,62 +614,27 @@ void FileManager::readMeta() {
 }
 
 void FileManager::extract(const std::string& pathToOutputFolder) {
-    // Helper: validate a file name from the container against path traversal.
-    auto safeFilename = [](const std::string& name) -> std::string {
-        auto safe = std::filesystem::path(name).filename();
-        if (safe.empty() || safe == "." || safe == "..") {
-            throw std::runtime_error("Unsafe file name in container: " + name);
-        }
-        return safe.string();
-    };
-
-    // If no specific files were requested (-f not given), extract all files.
-    size_t totalFiles = filesList_.empty() ? fileTable_.getFilesTable().size() : filesList_.size();
-    LOG_DEBUG("extract: output='%s', files requested=%zu (0=all)",
-              pathToOutputFolder.c_str(), filesList_.size());
-
-    size_t extracted = 0;
+    std::vector<FileEntry> entries;
     if (filesList_.empty()) {
-        for (const FileEntry& fEntry : fileTable_.getFilesTable()) {
-            std::string safeName = safeFilename(fEntry.name);
-            std::string outputPath = pathToOutputFolder + "/" + safeName;
-            std::ofstream output(outputPath, std::ios::binary);
-            if (!output.is_open()) {
-                throw std::runtime_error("Cannot open output file: " + outputPath);
-            }
-            LOG_DEBUG("extract: '%s' size=%llu, chunks=%u, offset=%llu",
-                      fEntry.name.c_str(), (unsigned long long)fEntry.size,
-                      fEntry.chunks, (unsigned long long)fEntry.offset);
-            readChunks(output, fEntry);
-            if (!checkSumVerify(fEntry)) {
-                LOG_WARN("FileManager: File '%s' decrypted unsuccessfully, wrong checksum",
-                         fEntry.name.c_str());
-            }
-            output.close();
-            extracted++;
-        }
+        entries = fileTable_.getFilesTable();
     } else {
-        for (const std::string& fName : filesList_) {
-            std::string safeName = safeFilename(fName);
-            std::string outputPath = pathToOutputFolder + "/" + safeName;
-            std::ofstream output(outputPath, std::ios::binary);
-            if (!output.is_open()) {
-                throw std::runtime_error("Cannot open output file: " + outputPath);
-            }
-            const FileEntry& fEntry = fileTable_.getFileInfoByName(fName);
-            LOG_DEBUG("extract: '%s' size=%llu, chunks=%u, offset=%llu",
-                      fEntry.name.c_str(), (unsigned long long)fEntry.size,
-                      fEntry.chunks, (unsigned long long)fEntry.offset);
-            readChunks(output, fEntry);
-            if (!checkSumVerify(fEntry)) {
-                LOG_WARN("FileManager: File '%s' decrypted unsuccessfully, wrong checksum",
-                         fName.c_str());
-            }
-            output.close();
-            extracted++;
-        }
+        for (const auto& fName : filesList_)
+            entries.push_back(fileTable_.getFileInfoByName(fName));
     }
-    LOG_DEBUG("extract: complete, %zu/%zu file(s) extracted", extracted, totalFiles);
+
+    LOG_DEBUG("extract: output='%s', files=%zu", pathToOutputFolder.c_str(), entries.size());
+
+    size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
+    DecryptPipeline::Config cfg{workerCount, 2 * workerCount};
+    DecryptPipeline pipeline(*crypto_, cfg);
+    auto fio = makeFragmentedIO();
+    std::atomic<bool> noCancel{false};
+    pipeline.run(entries, fio, pathToOutputFolder, noCancel, nullptr);
+
+    for (const auto& name : pipeline.checksumFailures())
+        LOG_WARN("FileManager: File '%s' decrypted unsuccessfully, wrong checksum", name.c_str());
+
+    LOG_DEBUG("extract: complete, %zu file(s) extracted", entries.size());
 }
 
 void FileManager::write() {
@@ -645,9 +642,18 @@ void FileManager::write() {
     if (filesList_.empty()) {
         throw std::runtime_error("No input files specified for create");
     }
+
+    auto t0 = std::chrono::steady_clock::now();
     createContainerFile();
-    // Set up crypto: generate salt, derive KEK, wrap DEK, store in header.
+    auto t1 = std::chrono::steady_clock::now();
+    LOG_INFO("write: createContainerFile took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+
     initCryptoForCreate();
+    auto t2 = std::chrono::steady_clock::now();
+    LOG_INFO("write: initCryptoForCreate (KDF + wrapDEK) took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count());
+
     computeAndStoreHeaderHmac();
 
     uint64_t available = computeAvailableDataCapacity();
@@ -660,13 +666,23 @@ void FileManager::write() {
     }
 
     writeAllSlots();
+    auto t3 = std::chrono::steady_clock::now();
+    LOG_INFO("write: writeAllSlots took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count());
 
-    // Data starts right after slot 0 (header + file table).
     uint64_t dataStart = header_->getHeaderSize() + header_->getMaxTableSize();
     size_t endPos = writeChunks(static_cast<size_t>(dataStart));
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
+    auto t4 = std::chrono::steady_clock::now();
+    LOG_INFO("write: writeChunks (pipeline encryption) took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count());
 
     writeFileTableToAllSlots();
+    auto t5 = std::chrono::steady_clock::now();
+    LOG_INFO("write: writeFileTableToAllSlots took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count());
+    LOG_INFO("write: TOTAL %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count());
 }
 
 void FileManager::add() {
@@ -722,56 +738,39 @@ void FileManager::printFilesTable() const {
 
 // ---- private helpers ----
 
+FragmentedIO FileManager::makeFragmentedIO() {
+    FragmentedIO fio;
+    fio.write = [this](const char* data, size_t size) -> uint64_t {
+        return writeFragmented(data, size);
+    };
+    fio.read = [this](char* buf, size_t size) {
+        readFragmented(buf, size);
+    };
+    fio.skipSlots = [this](uint64_t pos) -> uint64_t {
+        return skipSlots(pos);
+    };
+    fio.seekWrite = [this](uint64_t pos) {
+        containerStream_->seekp(static_cast<std::streamoff>(pos), std::ios::beg);
+    };
+    fio.tellWrite = [this]() -> uint64_t {
+        return static_cast<uint64_t>(containerStream_->tellp());
+    };
+    fio.seekRead = [this](uint64_t pos) {
+        containerStream_->clear();
+        containerStream_->seekg(static_cast<std::streamoff>(pos), std::ios::beg);
+    };
+    return fio;
+}
+
 size_t FileManager::writeChunks(size_t offset) {
-    containerStream_->seekp(static_cast<std::streamoff>(offset), std::ios::beg);
-    std::vector<char> chunk(BLOCK_SIZE);
-    std::vector<char> encryptedChunk(ENCRYPTED_BLOCK_SIZE);
-
-    for (const auto& file : filesList_) {
-        // Reset the checksum hasher before each file to guarantee a clean slate,
-        // even if the previous file left residual state (e.g. zero-byte file).
-        fileTable_.resetChecksum();
-
-        // Advance past any slot area before starting this file.
-        // Use skipSlots to skip the starting position if it's inside a slot.
-        uint64_t fileStartOffset = static_cast<uint64_t>(containerStream_->tellp());
-        fileStartOffset = skipSlots(fileStartOffset);
-        containerStream_->seekp(static_cast<std::streamoff>(fileStartOffset), std::ios::beg);
-        if (!containerStream_->good()) {
-            throw std::runtime_error(
-                "writeChunks: seekp to data zone offset " +
-                std::to_string(fileStartOffset) + " failed");
-        }
-        fileStartOffset = static_cast<uint64_t>(containerStream_->tellp());
-
-        std::ifstream input(file, std::ios::binary);
-        if (!input.is_open()) {
-            throw std::runtime_error("Cannot open input file: " + file);
-        }
-
-        // Track actual bytes read from the source file to avoid a TOCTOU race
-        // between writing data and recording the file size in the table.
-        size_t actualBytesRead = 0;
-
-        while (input.read(chunk.data(), BLOCK_SIZE)) {
-            // writeFragmented handles skipping over slot areas internally on
-            // every iteration, so no manual skipSlots is needed here.
-            fileTable_.updateChecksum(chunk.data(), BLOCK_SIZE);
-            crypto_->encrypt(chunk.data(), encryptedChunk.data(), BLOCK_SIZE);
-            writeFragmented(encryptedChunk.data(), ENCRYPTED_BLOCK_SIZE);
-            actualBytesRead += BLOCK_SIZE;
-        }
-        if (size_t lastBytes = static_cast<size_t>(input.gcount()); lastBytes > 0) {
-            size_t lastEncSize = lastBytes + NONCE_SIZE + AUTH_TAG_SIZE;
-            fileTable_.updateChecksum(chunk.data(), lastBytes);
-            crypto_->encrypt(chunk.data(), encryptedChunk.data(), lastBytes);
-            writeFragmented(encryptedChunk.data(), lastEncSize);
-            actualBytesRead += lastBytes;
-        }
-        fileTable_.addFileEntry(file, fileTable_.getChecksum(), fileStartOffset, actualBytesRead);
-        header_->increaseFileCount();
-    }
-    return static_cast<size_t>(containerStream_->tellp());
+    size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
+    EncryptPipeline::Config cfg{workerCount, 2 * workerCount};
+    EncryptPipeline pipeline(*crypto_, cfg);
+    auto fio = makeFragmentedIO();
+    std::atomic<bool> noCancel{false};
+    pipeline.run(filesList_, fio, fileTable_, *header_,
+                 static_cast<uint64_t>(offset), noCancel, nullptr);
+    return static_cast<size_t>(pipeline.endOffset());
 }
 
 void FileManager::readHeader() {

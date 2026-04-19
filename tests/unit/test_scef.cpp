@@ -547,6 +547,95 @@ TEST(EnumSpecTest, KDFProfiles_AllFourDefined) {
 }
 
 // ===========================================================================
+// 6. EMPTY FILE ROUNDTRIP — bug regression
+//
+// A zero-byte file must survive create→extract intact.
+// Both the empty entry and the co-present non-empty entry must be correct.
+// ===========================================================================
+
+class EmptyFileTest : public ::testing::Test {
+protected:
+    fs::path tmp_dir_;
+    fs::path input_dir_;
+    fs::path container_dir_;
+    fs::path output_dir_;
+
+    void SetUp() override {
+        tmp_dir_       = make_temp_dir("empty");
+        input_dir_     = tmp_dir_ / "inputs";
+        container_dir_ = tmp_dir_ / "container";
+        output_dir_    = tmp_dir_ / "outputs";
+        fs::create_directories(input_dir_);
+        fs::create_directories(container_dir_);
+        fs::create_directories(output_dir_);
+    }
+    void TearDown() override {
+        fs::remove_all(tmp_dir_);
+    }
+};
+
+// Empty file must appear in getFilesTable() with size==0 and chunks==0.
+TEST_F(EmptyFileTest, EmptyFileAppearsInTable) {
+    fs::path empty_file = input_dir_ / "empty.bin";
+    write_file(empty_file, {});
+
+    fs::path nonempty_file = input_dir_ / "data.bin";
+    write_file(nonempty_file, {0x01, 0x02, 0x03});
+
+    uint64_t container_size = 4 * 1024 * 1024;
+    FileManager fm;
+    fm.init({empty_file.string(), nonempty_file.string()},
+            container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.write();
+
+    const auto& table = fm.getFilesTable();
+    ASSERT_EQ(table.size(), 2u) << "Both files must be present in the file table";
+
+    bool found_empty = false;
+    for (const auto& entry : table) {
+        if (fs::path(entry.name).filename() == "empty.bin") {
+            found_empty = true;
+            EXPECT_EQ(entry.size, 0u)   << "empty.bin must have size==0";
+            EXPECT_EQ(entry.chunks, 0u) << "empty.bin must have chunks==0";
+        }
+    }
+    EXPECT_TRUE(found_empty) << "empty.bin not found in file table";
+}
+
+// Empty file must be restored on disk with size 0 and correct (empty) checksum.
+TEST_F(EmptyFileTest, EmptyFileExtractedCorrectly) {
+    fs::path empty_file = input_dir_ / "empty.bin";
+    write_file(empty_file, {});
+
+    fs::path nonempty_file = input_dir_ / "data.bin";
+    const std::vector<uint8_t> payload = {0xDE, 0xAD, 0xBE, 0xEF};
+    write_file(nonempty_file, payload);
+
+    uint64_t container_size = 4 * 1024 * 1024;
+
+    {
+        FileManager fm;
+        fm.init({empty_file.string(), nonempty_file.string()},
+                container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.write();
+    }
+    {
+        FileManager fm;
+        fm.init({"empty.bin", "data.bin"}, container_dir_.string());
+        fm.extract(output_dir_.string());
+    }
+
+    // Empty file must exist and have zero size.
+    fs::path out_empty = output_dir_ / "empty.bin";
+    ASSERT_TRUE(fs::exists(out_empty)) << "empty.bin was not created on extract";
+    EXPECT_EQ(fs::file_size(out_empty), 0u) << "extracted empty.bin must be 0 bytes";
+
+    // Non-empty file must be intact.
+    auto result = read_file(output_dir_ / "data.bin");
+    EXPECT_EQ(result, payload) << "data.bin corrupted after empty-file roundtrip";
+}
+
+// ===========================================================================
 // Main
 // ===========================================================================
 
