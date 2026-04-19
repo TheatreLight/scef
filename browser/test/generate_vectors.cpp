@@ -43,7 +43,7 @@ int main() {
     std::array<uint8_t, 32> salt{};
     for (int i = 0; i < 32; i++) salt[i] = static_cast<uint8_t>(i);
 
-    uint32_t m_kib = 19 * 1024; // 19 MiB (FastAccess profile)
+    uint32_t m_kib = 19 * 1024; // 19 MiB (fixed for reproducible test vectors)
     uint32_t t = 2;
     uint32_t p = 1;
 

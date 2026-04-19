@@ -90,8 +90,8 @@ Q_INVOKABLE void closeContainer();
 | Index | Profile |
 |-------|---------|
 | 0 | Standard (default) |
-| 1 | FastAccess |
-| 2 | HighSecurity |
+| 1 | Fast |
+| 2 | High |
 | 3 | Browser |
 | 4 | Custom (manual m/t/p) |
 
@@ -233,10 +233,10 @@ stateDiagram-v2
 - Password + confirm password (with match indicator)
 - Container size in MB (SpinBox, 1–102400)
 - Security Profile (ComboBox):
-  - Standard (recommended) — 64 MiB, ~1s
-  - Fast Access — 19 MiB
-  - High Security — 256 MiB, ~6s
-  - Browser — 46 MiB
+  - Standard (recommended) — 1024 MiB, t=1, p=4, ~0.6-1.1s
+  - Fast — 256 MiB, t=1, p=4, ~0.1-0.3s
+  - High — 2048 MiB, t=1, p=4, ~1.2-1.9s
+  - Browser — 64 MiB, t=1, p=1, ~0.1s (WASM)
   - Custom
 - Advanced KDF Settings (collapsible):
   - Memory (MiB), Iterations, Parallelism spinboxes
