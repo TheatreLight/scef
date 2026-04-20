@@ -340,8 +340,8 @@ void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>&
 void FileManager::writeAllSlots() {
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         writeHeaderAt(slotOffsets_[i]);
+        containerFile_.syncToDevice();   // spec §3.1.3: one fsync per slot
     }
-    // No explicit flush here; the final syncToDevice at end of write() covers it.
 }
 
 void FileManager::writeFileTableToAllSlots() {
@@ -365,6 +365,7 @@ void FileManager::writeFileTableToAllSlots() {
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         writeHeaderAt(slotOffsets_[i]);
         writeFileTableAt(slotOffsets_[i], encTable);
+        containerFile_.syncToDevice();   // spec §3.1.3: one fsync per slot
     }
 }
 
