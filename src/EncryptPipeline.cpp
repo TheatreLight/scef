@@ -1,6 +1,7 @@
 #include "EncryptPipeline.h"
 #include "CryptoContext.h"
 #include "Logger.h"
+#include "NativeFile.h"
 
 #include "botan/hash.h"
 #include "botan/hex.h"
@@ -8,7 +9,6 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <map>
 
 EncryptPipeline::EncryptPipeline(CryptoManager& crypto, Config config)
@@ -79,19 +79,27 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files,
     for (const auto& filePath : files) {
         if (cancelFlag.load(std::memory_order_relaxed)) break;
 
-        std::ifstream input(filePath, std::ios::binary);
-        if (!input.is_open()) {
+        NativeFile input;
+        try {
+            input.open(filePath, NativeFile::OpenMode::OpenReadOnly);
+        } catch (const std::exception& ex) {
             ProcessedChunk errChunk;
             errChunk.seq_no = seqNo++;
-            errChunk.error = "Cannot open input file: " + filePath;
+            errChunk.error = std::string("Cannot open input file: ") + filePath +
+                             " (" + ex.what() + ")";
             writeQueue_.push(std::move(errChunk));
             break;
         }
 
         auto hasher = Botan::HashFunction::create("SHA-256");
+        uint64_t readOffset = 0;
         uint64_t fileBytesRead = 0;
 
-        if (input.peek() == std::char_traits<char>::eof()) {
+        // Read file size to detect empty files without consuming data.
+        uint64_t fileSize = input.size();
+
+        if (fileSize == 0) {
+            // Empty file — emit a zero-size sentinel with empty checksum.
             ProcessedChunk sentinel;
             sentinel.seq_no = seqNo++;
             sentinel.data.clear();
@@ -108,19 +116,21 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files,
         while (!cancelFlag.load(std::memory_order_relaxed)) {
             ChunkTask task;
             task.data.resize(BLOCK_SIZE);
-            input.read(task.data.data(), BLOCK_SIZE);
-            auto bytesRead = static_cast<size_t>(input.gcount());
-            if (bytesRead == 0) break;
+            size_t got = input.readSome(readOffset, task.data.data(), BLOCK_SIZE);
+            if (got == 0) break;  // EOF
 
-            task.data.resize(bytesRead);
+            task.data.resize(got);
             task.seq_no = seqNo++;
-            task.data_size = bytesRead;
+            task.data_size = got;
             task.file_path = filePath;
-            fileBytesRead += bytesRead;
+            fileBytesRead += got;
+            readOffset += got;
 
-            hasher->update(reinterpret_cast<const uint8_t*>(task.data.data()), bytesRead);
+            hasher->update(reinterpret_cast<const uint8_t*>(task.data.data()), got);
 
-            bool isLast = (bytesRead < static_cast<size_t>(BLOCK_SIZE)) || input.peek() == EOF;
+            // This is the last chunk if we've read all bytes of the file.
+            bool isLast = (readOffset >= fileSize);
+
             if (isLast) {
                 task.end_of_file = true;
                 auto digest = hasher->final();

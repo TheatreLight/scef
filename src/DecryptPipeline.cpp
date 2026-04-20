@@ -2,6 +2,7 @@
 #include "CryptoContext.h"
 #include "Header.h"
 #include "Logger.h"
+#include "NativeFile.h"
 
 #include "botan/hash.h"
 #include "botan/hex.h"
@@ -9,7 +10,6 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <map>
 
 DecryptPipeline::DecryptPipeline(CryptoManager& crypto, Config config)
@@ -158,7 +158,8 @@ void DecryptPipeline::writerLoop(const std::string& outputDir,
     std::map<uint64_t, ProcessedChunk> reorderBuf;
     uint64_t bytesWritten = 0;
 
-    std::ofstream currentOutput;
+    NativeFile currentOutput;
+    uint64_t currentOutputOffset = 0;
     std::string currentFileName;
     auto hasher = Botan::HashFunction::create("SHA-256");
 
@@ -176,23 +177,22 @@ void DecryptPipeline::writerLoop(const std::string& outputDir,
         }
 
         if (currentFileName != chunk.file_path) {
-            if (currentOutput.is_open()) currentOutput.close();
+            if (currentOutput.isOpen()) {
+                currentOutput.syncToDevice();
+                currentOutput.close();
+                currentOutputOffset = 0;
+            }
             currentFileName = chunk.file_path;
             std::string safeName = safeFilename(currentFileName);
             std::string outputPath = outputDir + "/" + safeName;
-            currentOutput.open(outputPath, std::ios::binary);
-            if (!currentOutput.is_open()) {
-                throw std::runtime_error("Cannot open output file: " + outputPath);
-            }
+            currentOutput.open(outputPath, NativeFile::OpenMode::CreateTruncate);
             hasher->clear();
         }
 
         if (chunk.data_size > 0) {
             hasher->update(reinterpret_cast<const uint8_t*>(chunk.data.data()), chunk.data_size);
-            if (!currentOutput.write(chunk.data.data(),
-                                      static_cast<std::streamsize>(chunk.data_size)).good()) {
-                throw std::runtime_error("Failed to write extracted file: " + currentFileName);
-            }
+            currentOutput.writeAt(currentOutputOffset, chunk.data.data(), chunk.data_size);
+            currentOutputOffset += chunk.data_size;
             bytesWritten += chunk.data_size;
         }
 
@@ -204,7 +204,9 @@ void DecryptPipeline::writerLoop(const std::string& outputDir,
                 checksumFailures_.push_back(currentFileName);
             }
             hasher->clear();
+            currentOutput.syncToDevice();
             currentOutput.close();
+            currentOutputOffset = 0;
             currentFileName.clear();
         }
 
@@ -233,5 +235,8 @@ void DecryptPipeline::writerLoop(const std::string& outputDir,
         }
     }
 
-    if (currentOutput.is_open()) currentOutput.close();
+    if (currentOutput.isOpen()) {
+        currentOutput.syncToDevice();
+        currentOutput.close();
+    }
 }
