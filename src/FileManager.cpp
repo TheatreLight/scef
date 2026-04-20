@@ -359,6 +359,7 @@ void FileManager::writeFileTableToAllSlots() {
 
     std::vector<char> encTable(encSize);
     crypto_->encrypt(serialized.c_str(), encTable.data(), plainSize);
+    Botan::secure_scrub_memory(serialized.data(), serialized.size());
     header_->incrementHeaderVersion();
     // Recompute HMAC because file_table_size and header_version changed.
     computeAndStoreHeaderHmac();
