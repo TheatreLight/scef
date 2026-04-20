@@ -35,6 +35,9 @@ void print_help() {
               << "  -s <bytes>                Fixed container size in bytes (required for create)\n"
               << "  --max_table_size <bytes>  Max encrypted file table size per slot\n"
               << "                            (default: " << DEFAULT_MAX_TABLE_SIZE << " bytes)\n"
+              << "  --log-level <level>       debug, info, bench, warning, error\n"
+              << "  --sparse                  Enable FSCTL_SET_SPARSE for create (default)\n"
+              << "  --no-sparse               Disable FSCTL_SET_SPARSE for create\n"
               << "\n"
               << "KDF options (create only):\n"
               << "  --kdf-profile <name>      Use a predefined KDF profile.\n"
@@ -68,7 +71,8 @@ std::string foundKey(const char* arg) {
     std::string_view s{arg};
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
-        s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p") {
+        s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
+        s == "--log-level") {
         return std::string(s);
     }
     return "";
@@ -85,6 +89,8 @@ struct ParsedArgs {
     uint32_t                 kdf_m_mib       = 0; // 0 = not specified
     uint32_t                 kdf_t           = 0; // 0 = not specified
     uint32_t                 kdf_p           = 0; // 0 = not specified
+    std::string              log_level_name;
+    bool                     use_sparse_file = true;
 };
 
 int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsage,
@@ -118,10 +124,62 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
             out.kdf_t = static_cast<uint32_t>(std::stoul(argv[i]));
         } else if (key == "--kdf-p") {
             out.kdf_p = static_cast<uint32_t>(std::stoul(argv[i]));
+        } else if (key == "--log-level") {
+            out.log_level_name = argv[i];
+        } else if (std::string_view{argv[i]} == "--sparse") {
+            out.use_sparse_file = true;
+        } else if (std::string_view{argv[i]} == "--no-sparse") {
+            out.use_sparse_file = false;
         }
         key.clear();
     }
     return 0;
+}
+
+LogLevel defaultLogLevel() {
+#ifdef NDEBUG
+    return LogLevel::INFO;
+#else
+    return LogLevel::DEBUG;
+#endif
+}
+
+bool tryParseLogLevel(const std::string& text, LogLevel& out) {
+    if (text == "debug") {
+        out = LogLevel::DEBUG;
+    } else if (text == "info") {
+        out = LogLevel::INFO;
+    } else if (text == "bench") {
+        out = LogLevel::BENCH;
+    } else if (text == "warning" || text == "warn") {
+        out = LogLevel::WARNING;
+    } else if (text == "error") {
+        out = LogLevel::ERROR;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+int applyLogLevelFromArgv(int argc, char** argv) {
+    LogLevel level = defaultLogLevel();
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view{argv[i]} != "--log-level") {
+            continue;
+        }
+        if (i + 1 >= argc) {
+            std::cerr << "--log-level requires a value: debug, info, bench, warning, error\n";
+            return EXIT_FAILURE;
+        }
+        if (!tryParseLogLevel(argv[i + 1], level)) {
+            std::cerr << "Unknown log level '" << argv[i + 1]
+                      << "'. Valid values: debug, info, bench, warning, error\n";
+            return EXIT_FAILURE;
+        }
+        ++i;
+    }
+    Logger::setLevel(level);
+    return EXIT_SUCCESS;
 }
 
 } // namespace
@@ -309,11 +367,9 @@ static int cmd_benchmark() {
 int main(int argc, char* argv[]) {
     // Mirror log output to console: INFO/DEBUG → stdout, WARNING/ERROR → stderr.
     Logger::init(/*mirror_to_console=*/true);
-#ifdef NDEBUG
-    Logger::setLevel(LogLevel::INFO);
-#else
-    Logger::setLevel(LogLevel::DEBUG);
-#endif
+    if (applyLogLevelFromArgv(argc, argv) == EXIT_FAILURE) {
+        return EXIT_FAILURE;
+    }
 
     if (argc < 2) {
         print_help();
@@ -371,6 +427,7 @@ int main(int argc, char* argv[]) {
             const std::string password = read_password();
             fileManager.init(args.fileList, args.containerPath, args.container_size,
                              args.max_table_size, /*create_new=*/true, password);
+            fileManager.setUseSparseFile(args.use_sparse_file);
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
             fileManager.write();
         } catch (const std::exception& e) {

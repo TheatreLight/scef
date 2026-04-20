@@ -8,6 +8,7 @@
 #include "KdfProfiles.h"
 
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -63,6 +64,7 @@ public:
     //   profile != None  → look up params from the profile table (m_kib/t/p are ignored).
     //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
     void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
+    void setUseSparseFile(bool enabled) { useSparseFile_ = enabled; }
 
     void readMeta();
     void extract(const std::string& pathToOutputFolder);
@@ -168,6 +170,21 @@ private:
     void readChunks(std::ofstream& output, const FileEntry& file);
     bool checkSumVerify(const FileEntry& file);
 
+    struct FragmentedWriteStats {
+        std::chrono::nanoseconds tellTime{0};
+        std::chrono::nanoseconds seekTime{0};
+        std::chrono::nanoseconds writeTime{0};
+        uint64_t bytesWritten = 0;
+        uint64_t writeCalls = 0;
+        uint64_t seekCalls = 0;
+        uint64_t tellCalls = 0;
+        uint64_t slotSkips = 0;
+        uint64_t fragmentedWrites = 0;
+    };
+
+    void resetFragmentedWriteStats();
+    void logFragmentedWriteStats() const;
+
     std::unique_ptr<Header> header_;
     FileTable fileTable_;
     std::array<uint64_t, SLOT_COUNT> slotOffsets_ = {0};
@@ -177,6 +194,8 @@ private:
     std::string containerFilePath_;
     std::vector<std::string> filesList_;
     std::string password_;
+    bool useSparseFile_ = true;
+    FragmentedWriteStats fragmentedWriteStats_{};
 
     uint64_t container_size_param_ = 0;   // size requested at init()
     uint64_t activeSlotOffset_   = 0;   // byte offset of the slot used by readMeta()

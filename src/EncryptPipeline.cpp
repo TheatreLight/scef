@@ -35,10 +35,10 @@ void EncryptPipeline::run(const std::vector<std::string>& files,
 
     io.seekWrite(startOffset);
 
-    LOG_INFO("EncryptPipeline: %zu file(s), %llu bytes total, %zu workers, pool threads=%zu, "
-             "readQueue capacity=%zu, writeQueue capacity=%zu",
-             files.size(), totalBytes, config_.worker_count,
-             config_.worker_count + 1, config_.queue_capacity, config_.queue_capacity * 2);
+    LOG_BENCH("EncryptPipeline: %zu file(s), %llu bytes total, %zu workers, pool threads=%zu, "
+              "readQueue capacity=%zu, writeQueue capacity=%zu",
+              files.size(), totalBytes, config_.worker_count,
+              config_.worker_count + 1, config_.queue_capacity, config_.queue_capacity * 2);
 
     auto pipelineStart = std::chrono::steady_clock::now();
 
@@ -69,7 +69,7 @@ void EncryptPipeline::run(const std::vector<std::string>& files,
     auto pipelineEnd = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(pipelineEnd - pipelineStart).count();
     double throughput = (ms > 0) ? (static_cast<double>(totalBytes) / 1024.0 / 1024.0) / (ms / 1000.0) : 0;
-    LOG_INFO("EncryptPipeline: finished in %lld ms (%.1f MB/s)", ms, throughput);
+    LOG_BENCH("EncryptPipeline: finished in %lld ms (%.1f MB/s)", ms, throughput);
 }
 
 void EncryptPipeline::readerTask(const std::vector<std::string>& files,
@@ -181,6 +181,12 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
     uint64_t currentFileStartOffset = 0;
     bool fileStartRecorded = false;
 
+    // Performance tracking
+    auto start_loop = std::chrono::steady_clock::now();
+    std::chrono::nanoseconds wait_time{0};
+    std::chrono::nanoseconds write_time{0};
+    size_t chunks_processed = 0;
+
     auto processChunk = [&](ProcessedChunk& chunk) {
         if (!chunk.error.empty()) {
             throw std::runtime_error("Pipeline encryption error: " + chunk.error);
@@ -192,7 +198,9 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
             fileStartRecorded = true;
         }
 
+        auto write_start = std::chrono::steady_clock::now();
         io.write(chunk.data.data(), chunk.data_size);
+        write_time += std::chrono::steady_clock::now() - write_start;
 
         size_t overhead = NONCE_SIZE + AUTH_TAG_SIZE;
         size_t plainBytes = (chunk.data_size > overhead) ? chunk.data_size - overhead : 0;
@@ -208,10 +216,14 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
         if (progressCallback && totalBytes > 0) {
             progressCallback(bytesProcessed, totalBytes);
         }
+        chunks_processed++;
     };
 
     while (!cancelFlag.load(std::memory_order_relaxed)) {
+        auto pop_start = std::chrono::steady_clock::now();
         auto maybeChunk = writeQueue_.pop();
+        wait_time += std::chrono::steady_clock::now() - pop_start;
+        
         if (!maybeChunk) break;
 
         auto& chunk = *maybeChunk;
@@ -231,4 +243,12 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
     }
 
     endOffset_ = io.tellWrite();
+    
+    auto total_time = std::chrono::steady_clock::now() - start_loop;
+    LOG_BENCH("WriterLoop stats: chunks=%llu, total=%lldms, wait=%lldms, write=%lldms",
+        static_cast<unsigned long long>(chunks_processed),
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(total_time).count()),
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(wait_time).count()),
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(write_time).count())
+    );
 }

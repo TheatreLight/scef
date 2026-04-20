@@ -122,21 +122,45 @@ size_t FileManager::bytesUntilNextSlot(uint64_t cur, size_t remaining) const {
 
 uint64_t FileManager::writeFragmented(const char* data, size_t size) {
     size_t written = 0;
+    size_t segments = 0;
     while (written < size) {
         // Skip past any slot the current write position is inside.
-        uint64_t cur = skipSlots(static_cast<uint64_t>(containerStream_->tellp()));
-        if (cur != static_cast<uint64_t>(containerStream_->tellp())) {
+        auto tell_start = std::chrono::steady_clock::now();
+        uint64_t rawPos = static_cast<uint64_t>(containerStream_->tellp());
+        fragmentedWriteStats_.tellTime += std::chrono::steady_clock::now() - tell_start;
+        fragmentedWriteStats_.tellCalls++;
+
+        uint64_t cur = skipSlots(rawPos);
+        if (cur != rawPos) {
+            auto seek_start = std::chrono::steady_clock::now();
             containerStream_->seekp(static_cast<std::streamoff>(cur), std::ios::beg);
+            fragmentedWriteStats_.seekTime += std::chrono::steady_clock::now() - seek_start;
+            fragmentedWriteStats_.seekCalls++;
+            fragmentedWriteStats_.slotSkips++;
         }
 
         size_t canWrite = bytesUntilNextSlot(cur, size - written);
+        auto write_start = std::chrono::steady_clock::now();
         auto& res = containerStream_->write(data + written, static_cast<std::streamsize>(canWrite));
+        fragmentedWriteStats_.writeTime += std::chrono::steady_clock::now() - write_start;
         if (!res.good()) {
             throw std::runtime_error("writeFragmented: write failed");
         }
+        fragmentedWriteStats_.bytesWritten += canWrite;
+        fragmentedWriteStats_.writeCalls++;
         written += canWrite;
+        segments++;
     }
-    return static_cast<uint64_t>(containerStream_->tellp());
+
+    if (segments > 1) {
+        fragmentedWriteStats_.fragmentedWrites++;
+    }
+
+    auto tell_start = std::chrono::steady_clock::now();
+    uint64_t endPos = static_cast<uint64_t>(containerStream_->tellp());
+    fragmentedWriteStats_.tellTime += std::chrono::steady_clock::now() - tell_start;
+    fragmentedWriteStats_.tellCalls++;
+    return endPos;
 }
 
 void FileManager::readFragmented(char* buf, size_t size) {
@@ -338,17 +362,15 @@ void FileManager::createContainerFile() {
     }
 
 #ifdef _WIN32
-    // Mark file as sparse so that seeking to the end and writing one byte
-    // does NOT trigger NTFS zero-fill of the entire region.  On a 13 GB
-    // container over USB this avoids ~50-60 minutes of zero writes.
-    // Best-effort: if the filesystem doesn't support sparse (e.g. exFAT),
-    // we fall back to the default behavior.
-    {
+    if (useSparseFile_) {
+        // Mark file as sparse so that seeking to the end and writing one byte
+        // does NOT trigger NTFS zero-fill of the entire region. Best-effort:
+        // if the filesystem doesn't support sparse (e.g. exFAT), we fall back.
         HANDLE h = CreateFileA(containerFilePath_.c_str(),
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL, nullptr);
+                               GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h != INVALID_HANDLE_VALUE) {
             DWORD br = 0;
             BOOL ok = DeviceIoControl(h, FSCTL_SET_SPARSE,
@@ -356,7 +378,11 @@ void FileManager::createContainerFile() {
             CloseHandle(h);
             LOG_DEBUG("createContainerFile: FSCTL_SET_SPARSE %s",
                       ok ? "succeeded" : "not supported on this filesystem");
+        } else {
+            LOG_WARN("createContainerFile: failed to open file handle for FSCTL_SET_SPARSE");
         }
+    } else {
+        LOG_DEBUG("createContainerFile: FSCTL_SET_SPARSE disabled by CLI");
     }
 #endif
 
@@ -411,11 +437,9 @@ void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>&
 
 void FileManager::writeAllSlots() {
     // Header fields are already set (salt, dek, etc.) and HMAC computed.
-    // Just serialize and write to all slot positions.
+    // Write headers only. Tables will be written at the end of the creation process.
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         writeHeaderAt(slotOffsets_[i]);
-        // Build an empty (zero-length) tables payload for initial creation.
-        writeFileTableAt(slotOffsets_[i], {});
     }
     // TODO: replace flush() with fsync/FlushFileBuffers for real crash safety (spec 4.6.2)
     containerStream_->flush();
@@ -646,12 +670,12 @@ void FileManager::write() {
     auto t0 = std::chrono::steady_clock::now();
     createContainerFile();
     auto t1 = std::chrono::steady_clock::now();
-    LOG_INFO("write: createContainerFile took %lld ms",
+    LOG_BENCH("write: createContainerFile took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
 
     initCryptoForCreate();
     auto t2 = std::chrono::steady_clock::now();
-    LOG_INFO("write: initCryptoForCreate (KDF + wrapDEK) took %lld ms",
+    LOG_BENCH("write: initCryptoForCreate (KDF + wrapDEK) took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count());
 
     computeAndStoreHeaderHmac();
@@ -667,21 +691,23 @@ void FileManager::write() {
 
     writeAllSlots();
     auto t3 = std::chrono::steady_clock::now();
-    LOG_INFO("write: writeAllSlots took %lld ms",
+    LOG_BENCH("write: writeAllSlots took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count());
 
     uint64_t dataStart = header_->getHeaderSize() + header_->getMaxTableSize();
+    resetFragmentedWriteStats();
     size_t endPos = writeChunks(static_cast<size_t>(dataStart));
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     auto t4 = std::chrono::steady_clock::now();
-    LOG_INFO("write: writeChunks (pipeline encryption) took %lld ms",
+    LOG_BENCH("write: writeChunks (pipeline encryption) took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count());
+    logFragmentedWriteStats();
 
     writeFileTableToAllSlots();
     auto t5 = std::chrono::steady_clock::now();
-    LOG_INFO("write: writeFileTableToAllSlots took %lld ms",
+    LOG_BENCH("write: writeFileTableToAllSlots took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count());
-    LOG_INFO("write: TOTAL %lld ms",
+    LOG_BENCH("write: TOTAL %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count());
 }
 
@@ -771,6 +797,28 @@ size_t FileManager::writeChunks(size_t offset) {
     pipeline.run(filesList_, fio, fileTable_, *header_,
                  static_cast<uint64_t>(offset), noCancel, nullptr);
     return static_cast<size_t>(pipeline.endOffset());
+}
+
+void FileManager::resetFragmentedWriteStats() {
+    fragmentedWriteStats_ = {};
+}
+
+void FileManager::logFragmentedWriteStats() const {
+    LOG_BENCH(
+        "writeFragmented stats: bytes=%llu, write_calls=%llu, fragmented_writes=%llu, "
+        "slot_skips=%llu, tell_calls=%llu, seek_calls=%llu, tell=%lldms, seek=%lldms, write=%lldms",
+        static_cast<unsigned long long>(fragmentedWriteStats_.bytesWritten),
+        static_cast<unsigned long long>(fragmentedWriteStats_.writeCalls),
+        static_cast<unsigned long long>(fragmentedWriteStats_.fragmentedWrites),
+        static_cast<unsigned long long>(fragmentedWriteStats_.slotSkips),
+        static_cast<unsigned long long>(fragmentedWriteStats_.tellCalls),
+        static_cast<unsigned long long>(fragmentedWriteStats_.seekCalls),
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            fragmentedWriteStats_.tellTime).count()),
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            fragmentedWriteStats_.seekTime).count()),
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            fragmentedWriteStats_.writeTime).count()));
 }
 
 void FileManager::readHeader() {

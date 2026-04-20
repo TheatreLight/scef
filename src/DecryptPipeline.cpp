@@ -31,8 +31,8 @@ void DecryptPipeline::run(const std::vector<FileEntry>& entries,
 
     checksumFailures_.clear();
 
-    LOG_INFO("DecryptPipeline: %zu file(s), %llu bytes total, %zu workers, pool threads=%zu",
-             entries.size(), totalBytes, config_.worker_count, config_.worker_count + 1);
+    LOG_BENCH("DecryptPipeline: %zu file(s), %llu bytes total, %zu workers, pool threads=%zu",
+              entries.size(), totalBytes, config_.worker_count, config_.worker_count + 1);
 
     auto pipelineStart = std::chrono::steady_clock::now();
 
@@ -63,7 +63,7 @@ void DecryptPipeline::run(const std::vector<FileEntry>& entries,
     auto pipelineEnd = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(pipelineEnd - pipelineStart).count();
     double throughput = (ms > 0) ? (static_cast<double>(totalBytes) / 1024.0 / 1024.0) / (ms / 1000.0) : 0;
-    LOG_INFO("DecryptPipeline: finished in %lld ms (%.1f MB/s)", ms, throughput);
+    LOG_BENCH("DecryptPipeline: finished in %lld ms (%.1f MB/s)", ms, throughput);
 }
 
 void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries,
