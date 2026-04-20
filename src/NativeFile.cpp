@@ -158,6 +158,8 @@ size_t NativeFile::readSome(uint64_t offset, void* buf, size_t size) {
                                  std::to_string(offset) + ": " +
                                  win32_error_string(err));
     }
+    // ok == TRUE, transferred == 0: ReadFile at EOF returns TRUE with zero bytes.
+    // This is documented EOF behavior (MSDN ReadFile), not an error.
     return static_cast<size_t>(transferred);
 }
 

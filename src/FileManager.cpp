@@ -105,10 +105,10 @@ uint64_t FileManager::writeFragmented(uint64_t offset, const char* data, size_t 
     size_t written = 0;
     size_t segments = 0;
     while (written < size) {
+        auto seek_start = std::chrono::steady_clock::now();
         uint64_t cur = skipSlots(offset);
+        fragmentedWriteStats_.seekTime += std::chrono::steady_clock::now() - seek_start;
         if (cur != offset) {
-            auto seek_start = std::chrono::steady_clock::now();
-            fragmentedWriteStats_.seekTime += std::chrono::steady_clock::now() - seek_start;
             fragmentedWriteStats_.seekCalls++;
             fragmentedWriteStats_.slotSkips++;
         }
