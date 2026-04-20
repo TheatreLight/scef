@@ -68,6 +68,7 @@ add_library(scef_lib STATIC
     src/Logger.cpp
     src/EncryptPipeline.cpp
     src/DecryptPipeline.cpp
+    src/NativeFile.cpp
 )
 
 target_include_directories(scef_lib PUBLIC
@@ -105,6 +106,7 @@ if(SCEF_BUILD_TESTS)
 
     add_executable(scef_unit_tests
         tests/unit/test_scef.cpp
+        tests/unit/test_native_file.cpp
     )
 
     target_link_libraries(scef_unit_tests PRIVATE
