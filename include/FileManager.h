@@ -163,8 +163,6 @@ private:
 
     void readHeader();
     void readFilesTable();
-    void readChunks(NativeFile& output, uint64_t& outputOffset, const FileEntry& file);
-    bool checkSumVerify(const FileEntry& file);
 
     struct FragmentedWriteStats {
         std::chrono::nanoseconds seekTime{0};

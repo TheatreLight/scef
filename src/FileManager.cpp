@@ -696,30 +696,3 @@ void FileManager::readFilesTable() {
               plainSize, fileTable_.getFilesTable().size());
 }
 
-void FileManager::readChunks(NativeFile& output, uint64_t& outputOffset, const FileEntry& file) {
-    fileTable_.resetChecksum();
-    uint64_t readOffset = file.offset;
-
-    std::vector<char> buf(ENCRYPTED_BLOCK_SIZE);
-    std::vector<char> bufDecrypted(BLOCK_SIZE);
-    size_t remaining = file.size;
-    for (size_t i = 0; i < file.chunks; ++i) {
-        size_t plainSize = std::min(remaining, static_cast<size_t>(BLOCK_SIZE));
-        size_t encSize   = plainSize + NONCE_SIZE + AUTH_TAG_SIZE;
-
-        // readFragmented returns the physical offset after the read, accounting
-        // for any slot regions that were skipped during the read.
-        readOffset = readFragmented(readOffset, buf.data(), encSize);
-
-        crypto_->decrypt(buf.data(), bufDecrypted.data(), plainSize);
-        fileTable_.updateChecksum(bufDecrypted.data(), plainSize);
-        output.writeAt(outputOffset, bufDecrypted.data(), plainSize);
-        outputOffset += plainSize;
-        remaining -= plainSize;
-    }
-}
-
-bool FileManager::checkSumVerify(const FileEntry& file) {
-    std::string checkSum = fileTable_.getChecksum();
-    return checkSum == file.checksum_sha256;
-}
