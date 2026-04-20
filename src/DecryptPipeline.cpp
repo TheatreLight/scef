@@ -47,8 +47,7 @@ void DecryptPipeline::run(const std::vector<FileEntry>& entries,
     }
 
     // If writerLoop throws, close both queues so workers/reader don't block
-    // forever on push(), then drain the pool before rethrowing.  Without this,
-    // the destructor joins threads stuck in BoundedQueue::push → deadlock.
+    // forever on push(), then drain the pool before rethrowing.
     try {
         writerLoop(outputDir, cancelFlag, progressCallback, totalBytes);
     } catch (...) {
@@ -87,7 +86,7 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries,
             continue;
         }
 
-        io.seekRead(entry.offset);
+        uint64_t readOffset = io.skipSlots(entry.offset);
         size_t remaining = entry.size;
 
         for (size_t i = 0; i < entry.chunks; ++i) {
@@ -102,7 +101,9 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries,
             task.data_size = plainSize;
             task.file_path = entry.name;
 
-            io.read(task.data.data(), encSize);
+            // io.read reads encSize bytes at readOffset, skipping slots internally,
+            // and returns the new physical offset after the read.
+            readOffset = io.read(readOffset, task.data.data(), encSize);
 
             if (i == entry.chunks - 1) {
                 task.end_of_file = true;

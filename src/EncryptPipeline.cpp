@@ -33,7 +33,8 @@ void EncryptPipeline::run(const std::vector<std::string>& files,
         totalBytes += std::filesystem::file_size(path, ec);
     }
 
-    io.seekWrite(startOffset);
+    // Apply startOffset: advance past any slot the starting position falls inside.
+    startOffset_ = io.skipSlots(startOffset);
 
     LOG_BENCH("EncryptPipeline: %zu file(s), %llu bytes total, %zu workers, pool threads=%zu, "
               "readQueue capacity=%zu, writeQueue capacity=%zu",
@@ -53,8 +54,7 @@ void EncryptPipeline::run(const std::vector<std::string>& files,
     }
 
     // If writerLoop throws, close both queues so workers/reader don't block
-    // forever on push(), then drain the pool before rethrowing.  Without this,
-    // the destructor joins threads stuck in BoundedQueue::push → deadlock.
+    // forever on push(), then drain the pool before rethrowing.
     try {
         writerLoop(io, fileTable, header, cancelFlag, progressCallback, totalBytes);
     } catch (...) {
@@ -178,6 +178,7 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
     std::map<uint64_t, ProcessedChunk> reorderBuf;
     uint64_t bytesProcessed = 0;
 
+    uint64_t currentOffset = startOffset_;
     uint64_t currentFileStartOffset = 0;
     bool fileStartRecorded = false;
 
@@ -193,13 +194,13 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
         }
 
         if (!fileStartRecorded) {
-            currentFileStartOffset = io.skipSlots(io.tellWrite());
-            io.seekWrite(currentFileStartOffset);
+            currentFileStartOffset = io.skipSlots(currentOffset);
+            currentOffset = currentFileStartOffset;
             fileStartRecorded = true;
         }
 
         auto write_start = std::chrono::steady_clock::now();
-        io.write(chunk.data.data(), chunk.data_size);
+        currentOffset = io.write(currentOffset, chunk.data.data(), chunk.data_size);
         write_time += std::chrono::steady_clock::now() - write_start;
 
         size_t overhead = NONCE_SIZE + AUTH_TAG_SIZE;
@@ -223,7 +224,7 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
         auto pop_start = std::chrono::steady_clock::now();
         auto maybeChunk = writeQueue_.pop();
         wait_time += std::chrono::steady_clock::now() - pop_start;
-        
+
         if (!maybeChunk) break;
 
         auto& chunk = *maybeChunk;
@@ -242,8 +243,8 @@ void EncryptPipeline::writerLoop(FragmentedIO& io,
         }
     }
 
-    endOffset_ = io.tellWrite();
-    
+    endOffset_ = currentOffset;
+
     auto total_time = std::chrono::steady_clock::now() - start_loop;
     LOG_BENCH("WriterLoop stats: chunks=%llu, total=%lldms, wait=%lldms, write=%lldms",
         static_cast<unsigned long long>(chunks_processed),

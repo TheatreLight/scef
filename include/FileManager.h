@@ -6,10 +6,10 @@
 #include "Header.h"
 #include "FileTable.h"
 #include "KdfProfiles.h"
+#include "NativeFile.h"
 
 #include <array>
 #include <chrono>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,7 +46,7 @@ computeSlotOffsets(uint64_t containerOrFileSize, uint32_t headerSize) {
 class FileManager {
 public:
     FileManager();
-    ~FileManager();
+    ~FileManager() = default;
     FileManager(const FileManager&) = delete;
     FileManager& operator=(const FileManager&) = delete;
     FileManager(FileManager&&) = delete;
@@ -64,7 +64,6 @@ public:
     //   profile != None  → look up params from the profile table (m_kib/t/p are ignored).
     //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
     void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
-    void setUseSparseFile(bool enabled) { useSparseFile_ = enabled; }
 
     void readMeta();
     void extract(const std::string& pathToOutputFolder);
@@ -97,16 +96,15 @@ private:
     // 'cur' must not be inside a slot (call skipSlots first).
     size_t bytesUntilNextSlot(uint64_t cur, size_t remaining) const;
 
-    // Write exactly 'size' bytes from 'data' to the container, advancing the
-    // write position and skipping over any slot reserved areas mid-write.
-    // Returns the container position immediately after the last written byte
-    // (which may be inside a slot area if the write ended right at a slot start).
-    uint64_t writeFragmented(const char* data, size_t size);
+    // Write exactly 'size' bytes from 'data' to the container at absolute 'offset',
+    // skipping over any slot reserved areas mid-write.
+    // Returns the container position immediately after the last written byte.
+    uint64_t writeFragmented(uint64_t offset, const char* data, size_t size);
 
-    // Read exactly 'size' bytes into 'buf' from the container, advancing the
-    // read position and skipping over any slot reserved areas mid-read.
-    // Must be called with the stream positioned at the start of the fragmented data.
-    void readFragmented(char* buf, size_t size);
+    // Read exactly 'size' bytes into 'buf' from 'offset', skipping over slot areas.
+    // Returns the physical file offset immediately after the last byte read.
+    // Throws on short read.
+    uint64_t readFragmented(uint64_t offset, char* buf, size_t size);
 
     // Create (or truncate) the container file and pre-allocate it to container_size_.
     void createContainerFile();
@@ -126,7 +124,7 @@ private:
     size_t writeChunks(size_t startOffset);
 
     // Build a FragmentedIO facade that routes pipeline reads/writes through
-    // this FileManager's containerStream_, skipping over slot areas.
+    // this FileManager's containerFile_, skipping over slot areas.
     FragmentedIO makeFragmentedIO();
 
     // Return the total number of bytes available for encrypted data blocks,
@@ -138,8 +136,6 @@ private:
 
     // Compute the encrypted storage footprint of files_ (queued in filesList_)
     // including per-chunk overhead (NONCE_SIZE + AUTH_TAG_SIZE per BLOCK_SIZE chunk).
-    // file_size_override is used when the caller already knows the total plaintext
-    // bytes (e.g. for add(), which may pass the cumulative size of existing data).
     [[nodiscard]] uint64_t computeRequiredDataBytes() const;
 
     // Initialize crypto for a new container (generate salt, derive KEK, wrap DEK).
@@ -167,17 +163,15 @@ private:
 
     void readHeader();
     void readFilesTable();
-    void readChunks(std::ofstream& output, const FileEntry& file);
+    void readChunks(NativeFile& output, uint64_t& outputOffset, const FileEntry& file);
     bool checkSumVerify(const FileEntry& file);
 
     struct FragmentedWriteStats {
-        std::chrono::nanoseconds tellTime{0};
         std::chrono::nanoseconds seekTime{0};
         std::chrono::nanoseconds writeTime{0};
         uint64_t bytesWritten = 0;
         uint64_t writeCalls = 0;
         uint64_t seekCalls = 0;
-        uint64_t tellCalls = 0;
         uint64_t slotSkips = 0;
         uint64_t fragmentedWrites = 0;
     };
@@ -189,12 +183,11 @@ private:
     FileTable fileTable_;
     std::array<uint64_t, SLOT_COUNT> slotOffsets_ = {0};
 
-    std::unique_ptr<std::fstream> containerStream_;
+    NativeFile containerFile_;
     std::unique_ptr<CryptoManager> crypto_;
     std::string containerFilePath_;
     std::vector<std::string> filesList_;
     std::string password_;
-    bool useSparseFile_ = true;
     FragmentedWriteStats fragmentedWriteStats_{};
 
     uint64_t container_size_param_ = 0;   // size requested at init()

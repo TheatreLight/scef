@@ -36,8 +36,6 @@ void print_help() {
               << "  --max_table_size <bytes>  Max encrypted file table size per slot\n"
               << "                            (default: " << DEFAULT_MAX_TABLE_SIZE << " bytes)\n"
               << "  --log-level <level>       debug, info, bench, warning, error\n"
-              << "  --sparse                  Enable FSCTL_SET_SPARSE for create (default)\n"
-              << "  --no-sparse               Disable FSCTL_SET_SPARSE for create\n"
               << "\n"
               << "KDF options (create only):\n"
               << "  --kdf-profile <name>      Use a predefined KDF profile.\n"
@@ -90,7 +88,6 @@ struct ParsedArgs {
     uint32_t                 kdf_t           = 0; // 0 = not specified
     uint32_t                 kdf_p           = 0; // 0 = not specified
     std::string              log_level_name;
-    bool                     use_sparse_file = true;
 };
 
 int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsage,
@@ -126,10 +123,6 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
             out.kdf_p = static_cast<uint32_t>(std::stoul(argv[i]));
         } else if (key == "--log-level") {
             out.log_level_name = argv[i];
-        } else if (std::string_view{argv[i]} == "--sparse") {
-            out.use_sparse_file = true;
-        } else if (std::string_view{argv[i]} == "--no-sparse") {
-            out.use_sparse_file = false;
         }
         key.clear();
     }
@@ -427,7 +420,6 @@ int main(int argc, char* argv[]) {
             const std::string password = read_password();
             fileManager.init(args.fileList, args.containerPath, args.container_size,
                              args.max_table_size, /*create_new=*/true, password);
-            fileManager.setUseSparseFile(args.use_sparse_file);
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
             fileManager.write();
         } catch (const std::exception& e) {

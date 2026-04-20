@@ -54,6 +54,7 @@ private:
     BoundedQueue<ChunkTask> readQueue_;
     BoundedQueue<ProcessedChunk> writeQueue_;
     std::atomic<size_t> activeWorkers_{0};
+    uint64_t startOffset_ = 0;  // slot-adjusted start offset set by run()
     uint64_t endOffset_ = 0;
 };
 

@@ -15,27 +15,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
-#include <ios>
-#include <istream>
 #include <memory>
 #include <stdexcept>
 #include <thread>
 
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#include <winioctl.h>
-#endif
-
 FileManager::FileManager() {
     header_ = std::make_unique<Header>();
     crypto_ = std::make_unique<CryptoManager>();
-}
-
-FileManager::~FileManager() {
-    if (containerStream_) {
-        containerStream_->close();
-    }
 }
 
 void FileManager::init(const std::vector<std::string>& filesList, const std::string& pathToDir,
@@ -64,20 +50,15 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
         }
     }
 
-    auto streamOpenFlags = std::ios::binary | std::ios::in | std::ios::out;
-    if (createNew) {
-        streamOpenFlags |= std::ios::trunc;
-    }
-
-    containerStream_ = std::make_unique<std::fstream>(containerFilePath_, streamOpenFlags);
-    if (!containerStream_->is_open()) {
-        throw std::runtime_error("Container file does not exist: " + containerFilePath_);
-    }
-
     if (!createNew) {
+        // Open existing container for reading and writing.
+        containerFile_.open(containerFilePath_, NativeFile::OpenMode::OpenExisting);
         readMeta();
         slotOffsets_ = computeSlotOffsets();  // recompute from authenticated header
     }
+    // For createNew, the file is opened inside createContainerFile() which is called
+    // from write().
+
     LOG_DEBUG("FileManager successfully initialized");
 }
 
@@ -113,27 +94,20 @@ uint64_t FileManager::skipSlots(uint64_t pos) const {
 size_t FileManager::bytesUntilNextSlot(uint64_t cur, size_t remaining) const {
     for (uint64_t slot : slotOffsets_) {
         if (slot > cur) {
-            remaining =std::min(remaining, slot - cur);
+            remaining = std::min(remaining, static_cast<size_t>(slot - cur));
             break;
         }
     }
     return remaining;
 }
 
-uint64_t FileManager::writeFragmented(const char* data, size_t size) {
+uint64_t FileManager::writeFragmented(uint64_t offset, const char* data, size_t size) {
     size_t written = 0;
     size_t segments = 0;
     while (written < size) {
-        // Skip past any slot the current write position is inside.
-        auto tell_start = std::chrono::steady_clock::now();
-        uint64_t rawPos = static_cast<uint64_t>(containerStream_->tellp());
-        fragmentedWriteStats_.tellTime += std::chrono::steady_clock::now() - tell_start;
-        fragmentedWriteStats_.tellCalls++;
-
-        uint64_t cur = skipSlots(rawPos);
-        if (cur != rawPos) {
+        uint64_t cur = skipSlots(offset);
+        if (cur != offset) {
             auto seek_start = std::chrono::steady_clock::now();
-            containerStream_->seekp(static_cast<std::streamoff>(cur), std::ios::beg);
             fragmentedWriteStats_.seekTime += std::chrono::steady_clock::now() - seek_start;
             fragmentedWriteStats_.seekCalls++;
             fragmentedWriteStats_.slotSkips++;
@@ -141,44 +115,29 @@ uint64_t FileManager::writeFragmented(const char* data, size_t size) {
 
         size_t canWrite = bytesUntilNextSlot(cur, size - written);
         auto write_start = std::chrono::steady_clock::now();
-        auto& res = containerStream_->write(data + written, static_cast<std::streamsize>(canWrite));
+        containerFile_.writeAt(cur, data + written, canWrite);
         fragmentedWriteStats_.writeTime += std::chrono::steady_clock::now() - write_start;
-        if (!res.good()) {
-            throw std::runtime_error("writeFragmented: write failed");
-        }
         fragmentedWriteStats_.bytesWritten += canWrite;
         fragmentedWriteStats_.writeCalls++;
+        offset = cur + canWrite;
         written += canWrite;
         segments++;
     }
 
-    if (segments > 1) {
-        fragmentedWriteStats_.fragmentedWrites++;
-    }
-
-    auto tell_start = std::chrono::steady_clock::now();
-    uint64_t endPos = static_cast<uint64_t>(containerStream_->tellp());
-    fragmentedWriteStats_.tellTime += std::chrono::steady_clock::now() - tell_start;
-    fragmentedWriteStats_.tellCalls++;
-    return endPos;
+    if (segments > 1) fragmentedWriteStats_.fragmentedWrites++;
+    return offset;
 }
 
-void FileManager::readFragmented(char* buf, size_t size) {
+uint64_t FileManager::readFragmented(uint64_t offset, char* buf, size_t size) {
     size_t totalRead = 0;
     while (totalRead < size) {
-        // Skip past any slot the current read position is inside.
-        uint64_t cur = skipSlots(static_cast<uint64_t>(containerStream_->tellg()));
-        if (cur != static_cast<uint64_t>(containerStream_->tellg())) {
-            containerStream_->seekg(static_cast<std::streamoff>(cur), std::ios::beg);
-        }
-
+        uint64_t cur = skipSlots(offset);
         size_t canRead = bytesUntilNextSlot(cur, size - totalRead);
-        auto& res = containerStream_->read(buf + totalRead, static_cast<std::streamsize>(canRead));
-        if (!res.good()) {
-            throw std::runtime_error("readFragmented: read failed");
-        }
+        containerFile_.readAt(cur, buf + totalRead, canRead);
+        offset = cur + canRead;
         totalRead += canRead;
     }
+    return offset;
 }
 
 // ---- KDF configuration ----
@@ -232,13 +191,6 @@ void FileManager::initCryptoForCreate() {
 }
 
 void FileManager::validateKdfParamsAndDeriveKek() {
-    // Validate KDF parameters before use: reject values outside the absolute
-    // supported range (OOM/infinite-loop guard).  NOTE: authenticity (HMAC) can
-    // only be checked AFTER KEK derivation, so these parameter values are not
-    // yet authenticated at this point.  The bounds check limits — but does not
-    // eliminate — the maximum Argon2id cost an attacker-supplied header can
-    // impose (chicken-and-egg: KEK is needed for HMAC, HMAC is needed to trust
-    // KDF params).
     uint32_t mKib = header_->getKdfMKib();
     uint32_t t     = header_->getKdfT();
     uint32_t p     = header_->getKdfP();
@@ -248,8 +200,6 @@ void FileManager::validateKdfParamsAndDeriveKek() {
         throw std::runtime_error("Header KDF parameters out of acceptable range");
     }
 
-    // Derive KEK from the password and the salt read from the header.
-    // This is the expensive Argon2id call — performed exactly once per open.
     try {
         crypto_->deriveKek(password_, *header_);
     } catch (...) {
@@ -264,8 +214,6 @@ void FileManager::validateKdfParamsAndDeriveKek() {
 }
 
 void FileManager::unwrapDekFromHeader() {
-    // Unwrap DEK using the already-derived KEK — throws on wrong password or
-    // corrupt DEK ciphertext.
     crypto_->unwrapDek(header_->getDekNonce(),
                        header_->getEncryptedDek(),
                        header_->getDekAuthTag());
@@ -282,9 +230,6 @@ void FileManager::computeAndStoreHeaderHmac() {
 }
 
 void FileManager::verifyHeaderHmac() {
-    // Recompute HMAC over the header bytes [0x0000..0x009F] as read from disk.
-    // At this point buffer_ holds the on-disk bytes (including the potentially
-    // corrupted fields), so any bit flip is detected.
     auto protectedBytes = header_->hmacProtectedBytes();
     auto expectedHmac   = crypto_->computeHmac(protectedBytes.data(), protectedBytes.size());
     const auto& storedHmac = header_->storedHmac();
@@ -361,65 +306,25 @@ void FileManager::createContainerFile() {
             " exceeds the maximum of " + std::to_string(MAX_CONTAINER_SIZE) + " bytes");
     }
 
-#ifdef _WIN32
-    if (useSparseFile_) {
-        // Mark file as sparse so that seeking to the end and writing one byte
-        // does NOT trigger NTFS zero-fill of the entire region. Best-effort:
-        // if the filesystem doesn't support sparse (e.g. exFAT), we fall back.
-        HANDLE h = CreateFileA(containerFilePath_.c_str(),
-                               GENERIC_READ | GENERIC_WRITE,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               nullptr, OPEN_EXISTING,
-                               FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h != INVALID_HANDLE_VALUE) {
-            DWORD br = 0;
-            BOOL ok = DeviceIoControl(h, FSCTL_SET_SPARSE,
-                                      nullptr, 0, nullptr, 0, &br, nullptr);
-            CloseHandle(h);
-            LOG_DEBUG("createContainerFile: FSCTL_SET_SPARSE %s",
-                      ok ? "succeeded" : "not supported on this filesystem");
-        } else {
-            LOG_WARN("createContainerFile: failed to open file handle for FSCTL_SET_SPARSE");
-        }
-    } else {
-        LOG_DEBUG("createContainerFile: FSCTL_SET_SPARSE disabled by CLI");
-    }
-#endif
-
-    // Pre-allocate: seek to last byte and write one zero byte.
-    containerStream_->seekp(static_cast<std::streamoff>(containerSize - 1), std::ios::beg);
-    containerStream_->put('\0');
-    if (!containerStream_->good()) {
-        throw std::runtime_error("Failed to pre-allocate container to " +
-                                 std::to_string(containerSize) + " bytes");
-    }
-    // TODO: replace flush() with fsync/FlushFileBuffers for real crash safety (spec 4.6.2)
-    containerStream_->flush();
-    LOG_DEBUG("createContainerFile: pre-allocated %llu bytes successfully", containerSize);
+    containerFile_.open(containerFilePath_, NativeFile::OpenMode::CreateTruncate);
+    bool trueSparse = containerFile_.preallocateSparse(containerSize);
+    LOG_DEBUG("createContainerFile: preallocated %llu bytes (sparse=%s)",
+              (unsigned long long)containerSize, trueSparse ? "yes" : "fallback");
 }
 
 void FileManager::writeHeaderAt(uint64_t slotOffset) {
     LOG_DEBUG("FileManager::writeHeaderAt: slot_offset=%llu", slotOffset);
-    containerStream_->seekp(static_cast<std::streamoff>(slotOffset), std::ios::beg);
     const char* buf = reinterpret_cast<const char*>(header_->buffer().data());
-    if (!containerStream_->write(buf, HEADER_SIZE).good()) {
-        throw std::runtime_error("Failed to write header at offset " +
-                                 std::to_string(slotOffset));
-    }
+    containerFile_.writeAt(slotOffset, buf, HEADER_SIZE);
 }
 
 void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>& encryptedTable) {
     uint64_t tableOffset = slotOffset + header_->getHeaderSize();
     LOG_DEBUG("FileManager::writeFileTableAt: slot_offset=%llu, table_offset=%llu, encrypted_table_size=%zu",
               slotOffset, tableOffset, encryptedTable.size());
-    containerStream_->seekp(static_cast<std::streamoff>(tableOffset), std::ios::beg);
 
     if (!encryptedTable.empty()) {
-        containerStream_->write(encryptedTable.data(), static_cast<std::streamsize>(encryptedTable.size()));
-        if (!containerStream_->good()) {
-            throw std::runtime_error("Failed to write file table at offset " +
-                                     std::to_string(tableOffset));
-        }
+        containerFile_.writeAt(tableOffset, encryptedTable.data(), encryptedTable.size());
     }
 
     // Zero-pad the remainder of the reserved area.
@@ -428,21 +333,15 @@ void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>&
     if (written < maxTableSize) {
         size_t pad = maxTableSize - written;
         std::vector<char> zeros(pad, '\0');
-        if (!containerStream_->write(zeros.data(), static_cast<std::streamsize>(pad)).good()) {
-            throw std::runtime_error("Failed to pad file table at offset " +
-                                     std::to_string(tableOffset));
-        }
+        containerFile_.writeAt(tableOffset + written, zeros.data(), pad);
     }
 }
 
 void FileManager::writeAllSlots() {
-    // Header fields are already set (salt, dek, etc.) and HMAC computed.
-    // Write headers only. Tables will be written at the end of the creation process.
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         writeHeaderAt(slotOffsets_[i]);
     }
-    // TODO: replace flush() with fsync/FlushFileBuffers for real crash safety (spec 4.6.2)
-    containerStream_->flush();
+    // No explicit flush here; the final syncToDevice at end of write() covers it.
 }
 
 void FileManager::writeFileTableToAllSlots() {
@@ -467,53 +366,21 @@ void FileManager::writeFileTableToAllSlots() {
         writeHeaderAt(slotOffsets_[i]);
         writeFileTableAt(slotOffsets_[i], encTable);
     }
-    // TODO: replace flush() with fsync/FlushFileBuffers for real crash safety (spec 4.6.2)
-    containerStream_->flush();
 }
 
 // ---- public operations ----
 
 void FileManager::readMeta() {
-    containerStream_->clear();
-
-    // Crash resilience strategy (spec 4.6.3):
-    //   - Try all 4 slots (0, then 1-3 as backups).
-    //   - For each slot: check magic → (derive KEK once) → verify HMAC → unwrap DEK.
-    //   - First slot that passes all checks wins.
-    //   - If a slot has valid magic but DEK/HMAC fails, continue to next slot
-    //     (the HMAC-protected region may be corrupted by a bad sector/USB glitch
-    //     while backup slots remain intact).
-    //   - If ALL slots fail:
-    //       - If at least one had valid magic but auth failed → "wrong password
-    //         or container corrupted" (wrong password is the common case since
-    //         all slots share the same key).
-    //       - If no slot had valid magic → "invalid container".
-    //
-    // Performance note: in the normal (non-corrupted) case, all 4 slots are
-    // identical copies of the same header, so they share the same salt and KDF
-    // parameters.  The KEK is therefore the same for every slot.  We derive the
-    // KEK exactly once (from the first magic-valid slot) and reuse it for the
-    // remaining slots — avoiding up to 3 redundant Argon2id invocations.
-    //
-    // Corruption recovery: if a slot passes magic validation but its KDF params
-    // or salt were corrupted by a single-bit flip, the derived KEK will be wrong
-    // and DEK unwrap / HMAC verification will fail on that same slot.  In that
-    // case we allow ONE re-derivation from the next magic-valid slot (whose salt
-    // may be intact).  After two independently derived KEKs both fail, it is
-    // almost certainly a wrong password rather than multi-slot corruption, so we
-    // stop re-deriving to prevent unbounded Argon2id cost.
-    //
-    // To support re-derivation the password must still be available after the
-    // first Argon2id call.  We keep a local secure copy that is scrubbed at the
-    // end of this function on all code paths.
+    // Crash resilience strategy (spec 4.6.3): try all 4 slots, first with
+    // valid HMAC wins.  KEK is derived at most twice (once per distinct salt).
 
     // Helper: read one header slot into header_. Returns true if magic is valid.
     auto trySlotMagic = [this](uint64_t offset) -> bool {
-        containerStream_->clear();
-        containerStream_->seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         HeaderBuffer hdrBuf;
         char* hdrPtr = reinterpret_cast<char*>(hdrBuf.data());
-        if (!containerStream_->read(hdrPtr, HEADER_SIZE).good()) {
+        try {
+            containerFile_.readAt(offset, hdrPtr, HEADER_SIZE);
+        } catch (...) {
             return false;
         }
         header_->read(hdrBuf);
@@ -521,14 +388,10 @@ void FileManager::readMeta() {
     };
 
     // Preserve a scrub-on-exit copy of the password for potential re-derivation.
-    // validateKdfParamsAndDeriveKek() zeroes password_ after the first use, so
-    // the local copy is our only re-derivation source.
     Botan::secure_vector<char> passwordCopy(password_.begin(), password_.end());
 
-    // Compute slot offsets from file size (== container size for well-formed files).
-    // Cannot use slotOffsets_ here — it's populated after readMeta() returns.
-    containerStream_->seekg(0, std::ios::end);
-    uint64_t fileSize = static_cast<uint64_t>(containerStream_->tellg());
+    // Compute slot offsets from file size.
+    uint64_t fileSize = containerFile_.size();
     if (fileSize == 0) {
         throw std::runtime_error("Invalid container: file is empty");
     }
@@ -538,15 +401,11 @@ void FileManager::readMeta() {
               fileSize, offsets[0], offsets[1], offsets[2], offsets[3]);
 
     bool recovered  = false;
-    bool kekDerived = false;   // true once validateKdfParamsAndDeriveKek() succeeds
-    int  kekDerivations = 0;  // how many Argon2id calls were made this open
+    bool kekDerived = false;
+    int  kekDerivations = 0;
     constexpr int MAX_KEK_DERIVATIONS = 2;
     int  slotsWithValidMagic = 0;
     std::string lastError = "all slots unreadable";
-    // KDF inputs used for the most recent KEK derivation.  Saved so we can
-    // detect whether a subsequent slot has DIFFERENT KDF inputs (genuine
-    // corruption) vs. the same inputs (wrong password — re-deriving would give
-    // the identical wrong KEK and waste one full Argon2id call).
     std::array<uint8_t, 32> kekSalt{};
     uint32_t kekMKib = 0, kekT = 0, kekP = 0;
 
@@ -555,18 +414,13 @@ void FileManager::readMeta() {
 
         if (!trySlotMagic(slotOff)) {
             LOG_DEBUG("readMeta: slot %zu at offset %llu — bad magic or unreadable", i, slotOff);
-            continue; // Bad magic or unreadable — try next slot.
+            continue;
         }
 
         slotsWithValidMagic++;
         LOG_DEBUG("readMeta: slot %zu at offset %llu — valid magic, m=%u KiB, t=%u, p=%u",
                   i, slotOff, header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
 
-        // Re-derivation check: if we already have a KEK but a previous slot
-        // failed auth, check whether THIS slot has different KDF inputs (salt
-        // or params) from the ones used to derive the KEK.  If different →
-        // the KEK-source slot was corrupted, allow one re-derivation.  If all
-        // inputs match → wrong password, re-deriving gives the same wrong KEK.
         if (kekDerived && kekDerivations < MAX_KEK_DERIVATIONS &&
             (header_->getSalt() != kekSalt ||
              header_->getKdfMKib() != kekMKib ||
@@ -577,12 +431,8 @@ void FileManager::readMeta() {
 
         try {
             if (!kekDerived) {
-                // Derive KEK from this slot's KDF params + salt.
-                // validateKdfParamsAndDeriveKek() reads password_ but zeroes it
-                // after use; we rely on passwordCopy for any second derivation.
-                // Restore password_ from our copy before each derivation call.
                 password_.assign(passwordCopy.begin(), passwordCopy.end());
-                validateKdfParamsAndDeriveKek(); // zeroes password_ on success
+                validateKdfParamsAndDeriveKek();
                 kekDerived = true;
                 kekDerivations++;
                 kekSalt = header_->getSalt();
@@ -591,9 +441,6 @@ void FileManager::readMeta() {
                 kekP    = header_->getKdfP();
                 LOG_DEBUG("readMeta: KEK derived (derivation #%d)", kekDerivations);
             }
-            // KEK is ready.  Authenticate first (HMAC), then decrypt (DEK unwrap).
-            // Authenticate-then-decrypt: verifying the HMAC before touching the
-            // ciphertext prevents padding-oracle / chosen-ciphertext attacks.
             verifyHeaderHmac();
             unwrapDekFromHeader();
             activeSlotOffset_ = slotOff;
@@ -603,12 +450,6 @@ void FileManager::readMeta() {
         } catch (const std::exception& ex) {
             lastError = ex.what();
             LOG_DEBUG("readMeta: slot %zu auth failed: %s", i, ex.what());
-            // If the KEK was derived but auth failed, the KEK-source slot's salt
-            // might have been corrupted.  We defer the re-derivation decision to
-            // the NEXT slot: when trySlotMagic() loads slot i+1, we compare its
-            // salt to kekSalt.  Same salt → wrong password (re-derive is useless);
-            // different salt → corruption, worth one re-derivation.
-            // The check lives at the TOP of the next iteration (see below).
         }
     }
 
@@ -707,8 +548,15 @@ void FileManager::write() {
     auto t5 = std::chrono::steady_clock::now();
     LOG_BENCH("write: writeFileTableToAllSlots took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count());
+
+    // Drain OS page cache to device before reporting TOTAL.
+    auto tBeforeSync = std::chrono::steady_clock::now();
+    containerFile_.syncToDevice();
+    auto tAfterSync = std::chrono::steady_clock::now();
+    LOG_BENCH("write: syncToDevice took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(tAfterSync - tBeforeSync).count());
     LOG_BENCH("write: TOTAL %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count());
+             std::chrono::duration_cast<std::chrono::milliseconds>(tAfterSync - t0).count());
 }
 
 void FileManager::add() {
@@ -723,7 +571,6 @@ void FileManager::add() {
     }
 
     // Sum slot reserved areas that fall within [dataEnd, containerSize).
-    // Slots never overlap (minimum container size guarantees it).
     uint64_t totalReserved = 0;
     uint64_t slotReserved = header_->getHeaderSize() + header_->getMaxTableSize();
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
@@ -748,6 +595,13 @@ void FileManager::add() {
     size_t endPos = writeChunks(static_cast<size_t>(dataEnd));
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     writeFileTableToAllSlots();
+
+    auto tBeforeSync = std::chrono::steady_clock::now();
+    containerFile_.syncToDevice();
+    auto tAfterSync = std::chrono::steady_clock::now();
+    LOG_BENCH("add: syncToDevice took %lld ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(tAfterSync - tBeforeSync).count());
+
     LOG_DEBUG("add: complete, new data_end=%zu, file_count=%zu",
               endPos, fileTable_.getFilesTable().size());
 }
@@ -766,24 +620,14 @@ void FileManager::printFilesTable() const {
 
 FragmentedIO FileManager::makeFragmentedIO() {
     FragmentedIO fio;
-    fio.write = [this](const char* data, size_t size) -> uint64_t {
-        return writeFragmented(data, size);
+    fio.write = [this](uint64_t off, const char* data, size_t size) -> uint64_t {
+        return writeFragmented(off, data, size);
     };
-    fio.read = [this](char* buf, size_t size) {
-        readFragmented(buf, size);
+    fio.read = [this](uint64_t off, char* buf, size_t size) -> uint64_t {
+        return readFragmented(off, buf, size);
     };
     fio.skipSlots = [this](uint64_t pos) -> uint64_t {
         return skipSlots(pos);
-    };
-    fio.seekWrite = [this](uint64_t pos) {
-        containerStream_->seekp(static_cast<std::streamoff>(pos), std::ios::beg);
-    };
-    fio.tellWrite = [this]() -> uint64_t {
-        return static_cast<uint64_t>(containerStream_->tellp());
-    };
-    fio.seekRead = [this](uint64_t pos) {
-        containerStream_->clear();
-        containerStream_->seekg(static_cast<std::streamoff>(pos), std::ios::beg);
     };
     return fio;
 }
@@ -806,15 +650,12 @@ void FileManager::resetFragmentedWriteStats() {
 void FileManager::logFragmentedWriteStats() const {
     LOG_BENCH(
         "writeFragmented stats: bytes=%llu, write_calls=%llu, fragmented_writes=%llu, "
-        "slot_skips=%llu, tell_calls=%llu, seek_calls=%llu, tell=%lldms, seek=%lldms, write=%lldms",
+        "slot_skips=%llu, seek_calls=%llu, seek=%lldms, write=%lldms",
         static_cast<unsigned long long>(fragmentedWriteStats_.bytesWritten),
         static_cast<unsigned long long>(fragmentedWriteStats_.writeCalls),
         static_cast<unsigned long long>(fragmentedWriteStats_.fragmentedWrites),
         static_cast<unsigned long long>(fragmentedWriteStats_.slotSkips),
-        static_cast<unsigned long long>(fragmentedWriteStats_.tellCalls),
         static_cast<unsigned long long>(fragmentedWriteStats_.seekCalls),
-        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-            fragmentedWriteStats_.tellTime).count()),
         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
             fragmentedWriteStats_.seekTime).count()),
         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -822,12 +663,9 @@ void FileManager::logFragmentedWriteStats() const {
 }
 
 void FileManager::readHeader() {
-    containerStream_->seekg(0, std::ios::beg);
     HeaderBuffer headerBuffer;
     char* headerPtr = reinterpret_cast<char*>(headerBuffer.data());
-    if (!containerStream_->read(headerPtr, HEADER_SIZE).good()) {
-        throw std::runtime_error("Failed to read header");
-    }
+    containerFile_.readAt(0, headerPtr, HEADER_SIZE);
     header_->read(headerBuffer);
     LOG_DEBUG("readHeader: container_size=%llu, block_size=%u, "
               "file_table_size=%u, max_table_size=%u, kdf(m=%u KiB, t=%u, p=%u)",
@@ -837,11 +675,8 @@ void FileManager::readHeader() {
 }
 
 void FileManager::readFilesTable() {
-    // Table is located immediately after the active header slot.
-    // activeSlotOffset_ is 0 for slot 0, or the recovered backup slot's byte offset.
     uint64_t tableOffset = activeSlotOffset_ + header_->getHeaderSize();
 
-    // Spec 4.2.4: file_table_size includes nonce (12) + ciphertext + auth tag (16).
     uint32_t encSize = header_->getFileTableSize();
     LOG_DEBUG("readFilesTable: table_offset=%llu, enc_size=%u", tableOffset, encSize);
     if (encSize <= NONCE_SIZE + AUTH_TAG_SIZE) {
@@ -850,41 +685,35 @@ void FileManager::readFilesTable() {
     }
     size_t plainSize = encSize - NONCE_SIZE - AUTH_TAG_SIZE;
 
-    containerStream_->seekg(static_cast<std::streamoff>(tableOffset), std::ios::beg);
     std::string encData(encSize, '\0');
-    char* ptr = encData.data();
-    if (!containerStream_->read(ptr, static_cast<std::streamsize>(encSize)).good()) {
-        throw std::runtime_error("Failed to read file table");
-    }
+    containerFile_.readAt(tableOffset, encData.data(), encSize);
 
     std::string decrypted(plainSize, '\0');
-    crypto_->decrypt(ptr, decrypted.data(), plainSize);
+    crypto_->decrypt(encData.data(), decrypted.data(), plainSize);
     fileTable_.deserialize(decrypted);
     LOG_DEBUG("readFilesTable: decrypted %zu bytes, %zu file(s) loaded",
               plainSize, fileTable_.getFilesTable().size());
 }
 
-void FileManager::readChunks(std::ofstream& output, const FileEntry& file) {
+void FileManager::readChunks(NativeFile& output, uint64_t& outputOffset, const FileEntry& file) {
     fileTable_.resetChecksum();
-    containerStream_->clear();
-    containerStream_->seekg(static_cast<std::streamoff>(file.offset), std::ios::beg);
+    uint64_t readOffset = file.offset;
 
     std::vector<char> buf(ENCRYPTED_BLOCK_SIZE);
     std::vector<char> bufDecrypted(BLOCK_SIZE);
     size_t remaining = file.size;
     for (size_t i = 0; i < file.chunks; ++i) {
-        // readFragmented handles skipping over slot areas internally on every
-        // iteration, so no manual skipSlots is needed here.
         size_t plainSize = std::min(remaining, static_cast<size_t>(BLOCK_SIZE));
         size_t encSize   = plainSize + NONCE_SIZE + AUTH_TAG_SIZE;
 
-        readFragmented(buf.data(), encSize);
+        // readFragmented returns the physical offset after the read, accounting
+        // for any slot regions that were skipped during the read.
+        readOffset = readFragmented(readOffset, buf.data(), encSize);
+
         crypto_->decrypt(buf.data(), bufDecrypted.data(), plainSize);
         fileTable_.updateChecksum(bufDecrypted.data(), plainSize);
-        if (!output.write(bufDecrypted.data(), static_cast<std::streamsize>(plainSize)).good()) {
-            throw std::runtime_error("Failed to extract file '" + file.name +
-                                     "': failed write chunk");
-        }
+        output.writeAt(outputOffset, bufDecrypted.data(), plainSize);
+        outputOffset += plainSize;
         remaining -= plainSize;
     }
 }
