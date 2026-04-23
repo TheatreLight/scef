@@ -67,8 +67,8 @@ private:
     std::unique_ptr<FileManager> fileManager_;
     FileListModel* fileListModel_;
     DriveListModel* driveListModel_;
-    std::string currentPassword_;
     QString currentContainerDir_;
+    std::string currentPassword_;
     bool containerOpen_ = false;
     bool busy_ = false;
 };

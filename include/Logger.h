@@ -14,8 +14,9 @@
 enum class LogLevel {
     DEBUG   = 0,
     INFO    = 1,
-    WARNING = 2,
-    ERROR   = 3,
+    BENCH   = 2,
+    WARNING = 3,
+    ERROR   = 4,
 };
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,7 @@ private:
 // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg, hicpp-vararg)
 #define LOG_DEBUG(fmt, ...)   Logger::log(LogLevel::DEBUG,   fmt __VA_OPT__(,) __VA_ARGS__)
 #define LOG_INFO(fmt, ...)    Logger::log(LogLevel::INFO,    fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOG_BENCH(fmt, ...)   Logger::log(LogLevel::BENCH,   fmt __VA_OPT__(,) __VA_ARGS__)
 #define LOG_WARN(fmt, ...)    Logger::log(LogLevel::WARNING, fmt __VA_OPT__(,) __VA_ARGS__)
 #define LOG_ERROR(fmt, ...)   Logger::log(LogLevel::ERROR,   fmt __VA_OPT__(,) __VA_ARGS__)
 // NOLINTEND(cppcoreguidelines-pro-type-vararg, hicpp-vararg)

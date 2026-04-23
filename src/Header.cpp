@@ -80,7 +80,6 @@ bool Header::validate() const {
 
 void Header::storeHmac(const std::array<uint8_t, 32>& hmac) {
     header_hmac_ = hmac;
-    // Write the new HMAC into the already-serialized buffer.
     std::copy(hmac.begin(), hmac.end(), buffer_.begin() + POSITION_HEADER_HMAC);
 }
 

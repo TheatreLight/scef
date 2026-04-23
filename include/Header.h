@@ -10,7 +10,7 @@
 #include <cstdint>
 
 constexpr size_t   HEADER_SIZE        = 4096;
-constexpr uint32_t BLOCK_SIZE         = 65536;
+constexpr uint32_t BLOCK_SIZE         = 32768;
 constexpr uint32_t DEFAULT_MAX_TABLE_SIZE = BLOCK_SIZE; // 65536 bytes
 
 // Maximum practical container size: 2 TiB (2^41 bytes)
