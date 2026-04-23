@@ -182,8 +182,7 @@ void FileManager::initCryptoForCreate() {
     std::array<uint8_t, AUTH_TAG_SIZE> dekAuthTag{};
     crypto_->wrapDek(dekNonce, encryptedDek, dekAuthTag);
     LOG_DEBUG("initCryptoForCreate: DEK wrapped, nonce[0..2]=%02x%02x%02x, tag[0..2]=%02x%02x%02x",
-              dekNonce[0], dekNonce[1], dekNonce[2],
-              dekAuthTag[0], dekAuthTag[1], dekAuthTag[2]);
+        dekNonce[0], dekNonce[1], dekNonce[2], dekAuthTag[0], dekAuthTag[1], dekAuthTag[2]);
 
     header_->setDekNonce(dekNonce);
     header_->setEncryptedDek(encryptedDek);
@@ -296,20 +295,16 @@ void FileManager::createContainerFile() {
     LOG_DEBUG("createContainerFile: size=%llu, min=%llu, max=%llu, max_table=%u, path='%s'",
               containerSize, minSize, MAX_CONTAINER_SIZE, maxTableSize, containerFilePath_.c_str());
     if (containerSize < minSize) {
-        throw std::runtime_error(
-            "Container size " + std::to_string(containerSize) +
+        throw std::runtime_error("Container size " + std::to_string(containerSize) +
             " is below the minimum of " + std::to_string(minSize) + " bytes");
     }
     if (containerSize > MAX_CONTAINER_SIZE) {
-        throw std::runtime_error(
-            "Container size " + std::to_string(containerSize) +
+        throw std::runtime_error("Container size " + std::to_string(containerSize) +
             " exceeds the maximum of " + std::to_string(MAX_CONTAINER_SIZE) + " bytes");
     }
 
     containerFile_.open(containerFilePath_, NativeFile::OpenMode::CreateTruncate);
-    bool trueSparse = containerFile_.preallocateSparse(containerSize);
-    LOG_DEBUG("createContainerFile: preallocated %llu bytes (sparse=%s)",
-              (unsigned long long)containerSize, trueSparse ? "yes" : "fallback");
+    containerFile_.preallocateSparse(containerSize);
 }
 
 void FileManager::writeHeaderAt(uint64_t slotOffset) {
@@ -329,7 +324,7 @@ void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>&
 
     // Zero-pad the remainder of the reserved area.
     uint32_t maxTableSize = header_->getMaxTableSize();
-    size_t written        = encryptedTable.size();
+    size_t written = encryptedTable.size();
     if (written < maxTableSize) {
         size_t pad = maxTableSize - written;
         std::vector<char> zeros(pad, '\0');
@@ -352,8 +347,7 @@ void FileManager::writeFileTableToAllSlots() {
 
     uint32_t maxTableSize = header_->getMaxTableSize();
     if (encSize > maxTableSize) {
-        throw std::runtime_error(
-            "Encrypted file table size " + std::to_string(encSize) +
+        throw std::runtime_error("Encrypted file table size " + std::to_string(encSize) +
             " exceeds max table size " + std::to_string(maxTableSize));
     }
 
@@ -526,10 +520,9 @@ void FileManager::write() {
     uint64_t available = computeAvailableDataCapacity();
     uint64_t required  = computeRequiredDataBytes();
     if (required > available) {
-        throw std::runtime_error(
-            "Files too large for container: need " + std::to_string(required) +
-            " bytes of data capacity but container only provides " +
-            std::to_string(available) + " bytes");
+        throw std::runtime_error("Files too large for container: need " 
+            + std::to_string(required) + " bytes of data capacity but container only provides "
+            + std::to_string(available) + " bytes");
     }
 
     writeAllSlots();
@@ -537,9 +530,7 @@ void FileManager::write() {
     LOG_BENCH("write: writeAllSlots took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count());
 
-    uint64_t dataStart = header_->getHeaderSize() + header_->getMaxTableSize();
-    resetFragmentedWriteStats();
-    size_t endPos = writeChunks(static_cast<size_t>(dataStart));
+    size_t endPos = writeChunks(header_->getHeaderSize() + header_->getMaxTableSize());
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     auto t4 = std::chrono::steady_clock::now();
     LOG_BENCH("write: writeChunks (pipeline encryption) took %lld ms",
@@ -550,20 +541,12 @@ void FileManager::write() {
     auto t5 = std::chrono::steady_clock::now();
     LOG_BENCH("write: writeFileTableToAllSlots took %lld ms",
              std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count());
-
-    // Drain OS page cache to device before reporting TOTAL.
-    auto tBeforeSync = std::chrono::steady_clock::now();
-    containerFile_.syncToDevice();
-    auto tAfterSync = std::chrono::steady_clock::now();
-    LOG_BENCH("write: syncToDevice took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(tAfterSync - tBeforeSync).count());
     LOG_BENCH("write: TOTAL %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(tAfterSync - t0).count());
+             std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count());
 }
 
 void FileManager::add() {
     // Resume from the persisted end-of-data position.
-
     uint64_t dataEnd = fileTable_.getNextWriteOffset();
     uint64_t containerSize = header_->getContainerSize();
     LOG_DEBUG("add: %zu file(s) to add, data_end=%llu, container_size=%llu",
@@ -597,12 +580,6 @@ void FileManager::add() {
     size_t endPos = writeChunks(static_cast<size_t>(dataEnd));
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     writeFileTableToAllSlots();
-
-    auto tBeforeSync = std::chrono::steady_clock::now();
-    containerFile_.syncToDevice();
-    auto tAfterSync = std::chrono::steady_clock::now();
-    LOG_BENCH("add: syncToDevice took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(tAfterSync - tBeforeSync).count());
 
     LOG_DEBUG("add: complete, new data_end=%zu, file_count=%zu",
               endPos, fileTable_.getFilesTable().size());
@@ -638,11 +615,10 @@ size_t FileManager::writeChunks(size_t offset) {
     size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
     EncryptPipeline::Config cfg{workerCount, 2 * workerCount};
     EncryptPipeline pipeline(*crypto_, cfg);
-    auto fio = makeFragmentedIO();
+    auto fragmentedIO = makeFragmentedIO();
     std::atomic<bool> noCancel{false};
-    pipeline.run(filesList_, fio, fileTable_, *header_,
-                 static_cast<uint64_t>(offset), noCancel, nullptr);
-    return static_cast<size_t>(pipeline.endOffset());
+    pipeline.run(filesList_, fragmentedIO, fileTable_, *header_, offset, noCancel, nullptr);
+    return pipeline.endOffset();
 }
 
 void FileManager::resetFragmentedWriteStats() {

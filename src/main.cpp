@@ -2,7 +2,6 @@
 #include "KdfProfiles.h"
 #include "Logger.h"
 
-#include "botan/auto_rng.h"
 #include "botan/pwdhash.h"
 
 #include <chrono>

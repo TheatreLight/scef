@@ -41,9 +41,8 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
     LOG_DEBUG("deriveKek: KEK ready, kek[0..2]=%02x%02x%02x", kek_[0], kek_[1], kek_[2]);
 }
 
-void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out,
-                             std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
-                             std::array<uint8_t, 16>& dek_auth_tag_out) {
+void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
+    std::array<uint8_t, 16>& dek_auth_tag_out) {
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }
@@ -115,8 +114,7 @@ void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
               dek_[0], dek_[1], dek_[2]);
 }
 
-std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data,
-                                                      size_t size) const {
+std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data, size_t size) const {
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }
@@ -130,7 +128,7 @@ std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data,
     std::array<uint8_t, 32> result{};
     std::copy(digest.begin(), digest.end(), result.begin());
     LOG_DEBUG("computeHmac: input_size=%zu, hmac[0..2]=%02x%02x%02x",
-              size, result[0], result[1], result[2]);
+        size, result[0], result[1], result[2]);
     return result;
 }
 

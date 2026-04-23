@@ -45,7 +45,7 @@ public:
     // Pre-allocate the file to 'size' bytes using sparse allocation when possible.
     // Always extends the logical file size.
     // Returns true if the filesystem accepted a sparse hint, false for fallback.
-    bool preallocateSparse(uint64_t size);
+    void preallocateSparse(uint64_t size);
 
     // OS-queried file size.
     [[nodiscard]] uint64_t size() const;

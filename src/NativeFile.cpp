@@ -1,10 +1,8 @@
 #include "NativeFile.h"
 #include "Logger.h"
 
-#include <cerrno>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -87,23 +85,20 @@ void NativeFile::writeAt(uint64_t offset, const void* data, size_t size) {
     while (done < size) {
         OVERLAPPED ov = {};
         uint64_t pos = offset + done;
-        ov.Offset     = static_cast<DWORD>(pos & 0xFFFFFFFFULL);
-        ov.OffsetHigh = static_cast<DWORD>(pos >> 32);
+        ov.Offset     = static_cast<unsigned long>(pos & 0xFFFFFFFFULL);
+        ov.OffsetHigh = static_cast<unsigned long>(pos >> 32);
 
-        DWORD transferred = 0;
-        DWORD toWrite = static_cast<DWORD>(
-            std::min(size - done, static_cast<size_t>(0x80000000ULL)));
-        BOOL ok = WriteFile(static_cast<HANDLE>(handle_),
-                            src + done, toWrite, &transferred, &ov);
-        if (!ok) {
-            DWORD err = GetLastError();
+        unsigned long transferred = 0;
+        unsigned long toWrite = static_cast<unsigned long>(std::min(size - done, 0x80000000ULL));
+        int ok = WriteFile(handle_, src + done, toWrite, &transferred, &ov);
+        if (ok == 0) {
+            auto err = GetLastError();
             throw std::runtime_error("NativeFile::writeAt failed at offset " +
-                                     std::to_string(offset + done) + ": " +
-                                     win32_error_string(err));
+                std::to_string(offset + done) + ": " + win32_error_string(err));
         }
         if (transferred == 0) {
             throw std::runtime_error("NativeFile::writeAt stalled (0 bytes written) at offset " +
-                                     std::to_string(offset + done));
+                std::to_string(offset + done));
         }
         done += transferred;
     }
@@ -115,16 +110,14 @@ void NativeFile::readAt(uint64_t offset, void* buf, size_t size) {
     while (done < size) {
         OVERLAPPED ov = {};
         uint64_t pos = offset + done;
-        ov.Offset     = static_cast<DWORD>(pos & 0xFFFFFFFFULL);
-        ov.OffsetHigh = static_cast<DWORD>(pos >> 32);
+        ov.Offset     = static_cast<unsigned long>(pos & 0xFFFFFFFFULL);
+        ov.OffsetHigh = static_cast<unsigned long>(pos >> 32);
 
-        DWORD transferred = 0;
-        DWORD toRead = static_cast<DWORD>(
-            std::min(size - done, static_cast<size_t>(0x80000000ULL)));
-        BOOL ok = ReadFile(static_cast<HANDLE>(handle_),
-                           dst + done, toRead, &transferred, &ov);
-        if (!ok) {
-            DWORD err = GetLastError();
+        unsigned long transferred = 0;
+        unsigned long toRead = static_cast<unsigned long>(std::min(size - done, 0x80000000ULL));
+        int res = ReadFile(handle_, dst + done, toRead, &transferred, &ov);
+        if (res == 0) {
+            auto err = GetLastError();
             throw std::runtime_error("NativeFile::readAt failed at offset " +
                                      std::to_string(offset + done) + ": " +
                                      win32_error_string(err));
@@ -140,57 +133,53 @@ void NativeFile::readAt(uint64_t offset, void* buf, size_t size) {
 
 size_t NativeFile::readSome(uint64_t offset, void* buf, size_t size) {
     OVERLAPPED ov = {};
-    ov.Offset     = static_cast<DWORD>(offset & 0xFFFFFFFFULL);
-    ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+    ov.Offset     = static_cast<unsigned long>(offset & 0xFFFFFFFFULL);
+    ov.OffsetHigh = static_cast<unsigned long>(offset >> 32);
 
-    DWORD transferred = 0;
-    DWORD toRead = static_cast<DWORD>(
-        std::min(size, static_cast<size_t>(0x80000000ULL)));
-    BOOL ok = ReadFile(static_cast<HANDLE>(handle_),
-                       buf, toRead, &transferred, &ov);
-    if (!ok) {
-        DWORD err = GetLastError();
+    unsigned long transferred = 0;
+    unsigned long toRead = static_cast<unsigned long>(std::min(size, 0x80000000ULL));
+    int res = ReadFile(handle_, buf, toRead, &transferred, &ov);
+    if (res == 0) {
+        auto err = GetLastError();
         // ERROR_HANDLE_EOF means EOF — return 0.
         if (err == ERROR_HANDLE_EOF) {
             return 0;
         }
         throw std::runtime_error("NativeFile::readSome failed at offset " +
-                                 std::to_string(offset) + ": " +
-                                 win32_error_string(err));
+            std::to_string(offset) + ": " + win32_error_string(err));
     }
     // ok == TRUE, transferred == 0: ReadFile at EOF returns TRUE with zero bytes.
     // This is documented EOF behavior (MSDN ReadFile), not an error.
-    return static_cast<size_t>(transferred);
+    return transferred;
 }
 
-bool NativeFile::preallocateSparse(uint64_t size) {
+void NativeFile::preallocateSparse(uint64_t size) {
     // Step 1: try to mark the file as sparse (best-effort).
     DWORD br = 0;
-    BOOL sparseOk = DeviceIoControl(static_cast<HANDLE>(handle_),
-                                     FSCTL_SET_SPARSE,
-                                     nullptr, 0, nullptr, 0, &br, nullptr);
+    int res = DeviceIoControl(handle_, FSCTL_SET_SPARSE,
+        nullptr, 0, nullptr, 0, &br, nullptr);
+    LOG_DEBUG("createContainerFile: preallocated %llu bytes (sparse=%s)",
+              (unsigned long long)size, res != 0 ? "yes" : "fallback");
 
     // Step 2: set the file end pointer to 'size'.
-    LARGE_INTEGER li;
-    li.QuadPart = static_cast<LONGLONG>(size);
-    if (!SetFilePointerEx(static_cast<HANDLE>(handle_), li, nullptr, FILE_BEGIN)) {
-        DWORD err = GetLastError();
+    LARGE_INTEGER fSize;
+    fSize.QuadPart = static_cast<LONGLONG>(size);
+    if (!SetFilePointerEx(handle_, fSize, nullptr, FILE_BEGIN)) {
+        auto err = GetLastError();
         throw std::runtime_error("NativeFile::preallocateSparse SetFilePointerEx failed: " +
                                  win32_error_string(err));
     }
-    if (!SetEndOfFile(static_cast<HANDLE>(handle_))) {
-        DWORD err = GetLastError();
+    if (!SetEndOfFile(handle_)) {
+        auto err = GetLastError();
         throw std::runtime_error("NativeFile::preallocateSparse SetEndOfFile failed: " +
                                  win32_error_string(err));
     }
-
-    return sparseOk != FALSE;
 }
 
 uint64_t NativeFile::size() const {
     LARGE_INTEGER li = {};
-    if (!GetFileSizeEx(static_cast<HANDLE>(handle_), &li)) {
-        DWORD err = GetLastError();
+    if (!GetFileSizeEx(handle_, &li)) {
+        auto err = GetLastError();
         throw std::runtime_error("NativeFile::size GetFileSizeEx failed: " +
                                  win32_error_string(err));
     }
@@ -201,17 +190,16 @@ void NativeFile::syncToDevice() {
     if (!isOpen()) {
         return;
     }
-    if (!FlushFileBuffers(static_cast<HANDLE>(handle_))) {
-        DWORD err = GetLastError();
+    if (!FlushFileBuffers(handle_)) {
+        auto err = GetLastError();
         if (err == ERROR_INVALID_FUNCTION) {
             // Some USB drivers don't implement flush — non-fatal.
             LOG_WARN("NativeFile::syncToDevice: FlushFileBuffers returned "
-                     "ERROR_INVALID_FUNCTION for '%s' (driver may not support flush)",
-                     path_.c_str());
+                "ERROR_INVALID_FUNCTION for '%s' (driver may not support flush)", path_.c_str());
             return;
         }
         throw std::runtime_error("NativeFile::syncToDevice FlushFileBuffers failed for '" +
-                                 path_ + "': " + win32_error_string(err));
+            path_ + "': " + win32_error_string(err));
     }
 }
 
@@ -348,13 +336,11 @@ size_t NativeFile::readSome(uint64_t offset, void* buf, size_t size) {
     }
 }
 
-bool NativeFile::preallocateSparse(uint64_t size) {
+void NativeFile::preallocateSparse(uint64_t size) {
     if (::ftruncate(fd_, static_cast<off_t>(size)) == -1) {
         throw std::system_error(errno, std::system_category(),
                                 "NativeFile::preallocateSparse ftruncate failed");
     }
-    // ftruncate on most Linux filesystems (ext4, xfs, btrfs) creates sparse files.
-    return true;
 }
 
 uint64_t NativeFile::size() const {

@@ -51,7 +51,7 @@ private:
     CryptoManager& crypto_;
     Config config_;
     BS::thread_pool<> pool_;
-    BoundedQueue<ChunkTask> readQueue_;
+    BoundedQueue<ProcessedChunk> readQueue_;
     BoundedQueue<ProcessedChunk> writeQueue_;
     std::atomic<size_t> activeWorkers_{0};
     uint64_t startOffset_ = 0;  // slot-adjusted start offset set by run()

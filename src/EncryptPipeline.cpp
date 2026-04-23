@@ -6,8 +6,8 @@
 #include "botan/hash.h"
 #include "botan/hex.h"
 
-#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 
@@ -20,17 +20,19 @@ EncryptPipeline::EncryptPipeline(CryptoManager& crypto, Config config)
 {
 }
 
-void EncryptPipeline::run(const std::vector<std::string>& files,
-                           FragmentedIO& io,
-                           FileTable& fileTable,
-                           Header& header,
-                           uint64_t startOffset,
-                           const std::atomic<bool>& cancelFlag,
-                           std::function<void(uint64_t, uint64_t)> progressCallback) {
+void EncryptPipeline::run(const std::vector<std::string>& files, FragmentedIO& io,
+    FileTable& fileTable, Header& header, uint64_t startOffset, const std::atomic<bool>& cancelFlag,
+    std::function<void(uint64_t, uint64_t)> progressCallback)
+{
     uint64_t totalBytes = 0;
     for (const auto& path : files) {
         std::error_code ec;
-        totalBytes += std::filesystem::file_size(path, ec);
+        uint8_t fileSize = std::filesystem::file_size(path, ec);
+        if (ec) {
+            LOG_ERROR("EncryptPipeline: failed to get file size for %s: %s", path.c_str(), ec.message().c_str());
+            continue;
+        }
+        totalBytes += fileSize;
     }
 
     // Apply startOffset: advance past any slot the starting position falls inside.
@@ -72,21 +74,20 @@ void EncryptPipeline::run(const std::vector<std::string>& files,
     LOG_BENCH("EncryptPipeline: finished in %lld ms (%.1f MB/s)", ms, throughput);
 }
 
-void EncryptPipeline::readerTask(const std::vector<std::string>& files,
-                                  const std::atomic<bool>& cancelFlag) {
+void EncryptPipeline::readerTask(const std::vector<std::string>& files, const std::atomic<bool>& cancelFlag) {
     uint64_t seqNo = 0;
 
     for (const auto& filePath : files) {
-        if (cancelFlag.load(std::memory_order_relaxed)) break;
-
+        if (cancelFlag.load(std::memory_order_relaxed)) {
+            break;
+        }
         NativeFile input;
         try {
             input.open(filePath, NativeFile::OpenMode::OpenReadOnly);
         } catch (const std::exception& ex) {
             ProcessedChunk errChunk;
             errChunk.seq_no = seqNo++;
-            errChunk.error = std::string("Cannot open input file: ") + filePath +
-                             " (" + ex.what() + ")";
+            errChunk.error = std::string("Cannot open input file: ") + filePath + " (" + ex.what() + ")";
             writeQueue_.push(std::move(errChunk));
             break;
         }
@@ -102,19 +103,15 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files,
             // Empty file — emit a zero-size sentinel with empty checksum.
             ProcessedChunk sentinel;
             sentinel.seq_no = seqNo++;
-            sentinel.data.clear();
-            sentinel.data_size = 0;
             sentinel.file_path = filePath;
             sentinel.end_of_file = true;
-            auto digest = hasher->final();
-            sentinel.file_checksum = Botan::hex_encode(digest);
-            sentinel.file_plain_size = 0;
+            sentinel.file_checksum = Botan::hex_encode(hasher->final());
             writeQueue_.push(std::move(sentinel));
             continue;
         }
 
         while (!cancelFlag.load(std::memory_order_relaxed)) {
-            ChunkTask task;
+            ProcessedChunk task;
             task.data.resize(BLOCK_SIZE);
             size_t got = input.readSome(readOffset, task.data.data(), BLOCK_SIZE);
             if (got == 0) break;  // EOF
@@ -139,8 +136,9 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files,
                 hasher->clear();
             }
 
-            if (!readQueue_.push(std::move(task))) break;
-            if (isLast) break;
+            if (!readQueue_.push(std::move(task)) || isLast) {
+                break;
+            }
         }
     }
 
@@ -151,7 +149,7 @@ void EncryptPipeline::workerTask() {
     CryptoContext ctx = CryptoContext::makeEncryptor(
         crypto_.getDek(), crypto_.getDekSize());
 
-    while (auto maybeTask = readQueue_.pop()) {
+    while (std::optional<ProcessedChunk> maybeTask = readQueue_.pop()) {
         auto& chunk = *maybeTask;
 
         size_t encSize = chunk.data_size + NONCE_SIZE + AUTH_TAG_SIZE;

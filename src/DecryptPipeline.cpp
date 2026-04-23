@@ -95,7 +95,7 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries,
             size_t plainSize = std::min(remaining, static_cast<size_t>(BLOCK_SIZE));
             size_t encSize = plainSize + NONCE_SIZE + AUTH_TAG_SIZE;
 
-            ChunkTask task;
+            ProcessedChunk task;
             task.seq_no = seqNo++;
             task.data.resize(encSize);
             task.data_size = plainSize;
