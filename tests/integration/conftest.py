@@ -38,6 +38,17 @@ if not _BINARY_AVAILABLE:
 
 
 # ---------------------------------------------------------------------------
+# Pytest marker registration
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "slow: marks tests that take >30s (e.g. 100-file round-trip)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Pytest session-level fixture: skip all tests if binary is missing
 # ---------------------------------------------------------------------------
 

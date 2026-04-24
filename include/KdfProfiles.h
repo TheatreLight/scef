@@ -30,5 +30,3 @@ struct KdfProfileParams {
 // Returns nullptr if the name is not recognized.
 [[nodiscard]] const KdfProfileParams* getProfileByName(std::string_view name);
 
-// Returns the profile used when the user does not specify --kdf-profile.
-[[nodiscard]] EKDFProfile getDefaultProfile();

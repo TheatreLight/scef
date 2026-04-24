@@ -27,6 +27,3 @@ const KdfProfileParams* getProfileByName(std::string_view name) {
     return nullptr;
 }
 
-EKDFProfile getDefaultProfile() {
-    return EKDFProfile::Standard;
-}

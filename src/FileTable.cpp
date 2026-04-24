@@ -3,8 +3,6 @@
 #include "Logger.h"
 
 #include "nlohmann/json.hpp"
-#include "botan/hex.h"
-
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -12,23 +10,7 @@
 #include <nlohmann/detail/conversions/to_json.hpp>
 #include <nlohmann/json_fwd.hpp>
 
-FileTable::FileTable() {
-    funcSHA_ = Botan::HashFunction::create("SHA-256");
-}
-
-void FileTable::updateChecksum(const void* chunk, size_t size) {
-    funcSHA_->update(reinterpret_cast<const uint8_t*>(chunk), size);
-}
-
-std::string FileTable::getChecksum() {
-    auto digest = funcSHA_->final();
-    funcSHA_->clear();
-    return Botan::hex_encode(digest);
-}
-
-void FileTable::resetChecksum() {
-    funcSHA_->clear();
-}
+FileTable::FileTable() = default;
 
 void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checkSum,
                              size_t offset, size_t actual_size) {
@@ -102,10 +84,6 @@ std::string FileTable::to_string(bool isFull) const {
         }
     }
     return ss.str();
-}
-
-void FileTable::reset() {
-    filesTable_.clear();
 }
 
 const FileEntry& FileTable::getFileInfoByName(const std::string& fName) {

@@ -2,9 +2,7 @@
 // SCEF Spec-Compliance Tests
 //
 // These tests verify that the implementation matches the approved specification
-// from Chapter 4 (4_main_ch4_format.md). Tests are written against the SPEC,
-// not the current code — many are EXPECTED TO FAIL until the implementation
-// is brought into alignment with the spec.
+// from Chapter 4 (4_main_ch4_format.md).
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -88,7 +86,7 @@ TEST_F(HeaderLayoutTest, FileTableSizeAt0x0080_IsUint32) {
     uint32_t val_at_0x80 = le32_at(buf(), 0x0080);
     EXPECT_EQ(val_at_0x80, 12345u)
         << "Spec requires file_table_size (uint32) at offset 0x0080. "
-           "Code likely has file_table_offset (uint64) there instead.";
+           "Bytes at 0x0080 must hold file_table_size.";
 }
 
 // Spec 4.2.4: max_table_size is uint32_le at offset 0x0084.
@@ -98,7 +96,7 @@ TEST_F(HeaderLayoutTest, MaxTableSizeAt0x0084_Exists) {
     uint32_t val_at_0x84 = le32_at(buf(), 0x0084);
     EXPECT_EQ(val_at_0x84, BLOCK_SIZE)
         << "Spec requires max_table_size (uint32, default=block_size) at offset 0x0084. "
-           "Field is missing from implementation.";
+           "Bytes at 0x0084 must hold max_table_size.";
 }
 
 // Spec 4.2.4: file_count is uint32_le at offset 0x0088.
@@ -109,7 +107,7 @@ TEST_F(HeaderLayoutTest, FileCountAt0x0088) {
     uint32_t val_at_0x88 = le32_at(buf(), 0x0088);
     EXPECT_EQ(val_at_0x88, 1u)
         << "Spec requires file_count (uint32) at offset 0x0088. "
-           "Code places it at 0x0090.";
+           "Bytes at 0x0088 must hold file_count.";
 }
 
 // Spec 4.2.4: block_size is uint32_le at offset 0x008C.
@@ -119,7 +117,7 @@ TEST_F(HeaderLayoutTest, BlockSizeAt0x008C) {
     uint32_t val_at_0x8C = le32_at(buf(), 0x008C);
     EXPECT_EQ(val_at_0x8C, BLOCK_SIZE)
         << "Spec requires block_size (uint32) at offset 0x008C. "
-           "Code places it at 0x0094.";
+           "Bytes at 0x008C must hold block_size.";
 }
 
 // Spec 4.2.4: header_version is uint32_le at offset 0x0090.
@@ -129,7 +127,7 @@ TEST_F(HeaderLayoutTest, HeaderVersionAt0x0090) {
     uint32_t val_at_0x90 = le32_at(buf(), 0x0090);
     EXPECT_EQ(val_at_0x90, 0u)
         << "Spec requires header_version (uint32) at offset 0x0090. "
-           "Code places it at 0x0098.";
+           "Bytes at 0x0090 must hold header_version.";
 }
 
 // Spec 4.2.4: flags is uint32_le at offset 0x0094.
@@ -139,7 +137,7 @@ TEST_F(HeaderLayoutTest, FlagsAt0x0094) {
     uint32_t val_at_0x94 = le32_at(buf(), 0x0094);
     EXPECT_EQ(val_at_0x94, 0u)
         << "Spec requires flags (uint32) at offset 0x0094. "
-           "Code places it at 0x009C.";
+           "Bytes at 0x0094 must hold flags.";
 }
 
 // Spec 4.2.6: reserved_0 is 8 zero bytes at offset 0x0098.
@@ -501,13 +499,12 @@ TEST_F(ContainerOpsTest, MultiBlockFileIntactAfterAdd) {
 }
 
 // Spec 4.2.5: validate() should return true for a valid, freshly-created header.
-// Current code always returns false.
 TEST_F(ContainerOpsTest, ValidateReturnsTrueForValidHeader) {
     Header h;
     h.serialize();
     EXPECT_TRUE(h.validate())
         << "Spec 4.2.5/4.6.4: validate() must check magic and HMAC. "
-           "Current stub always returns false.";
+           "A freshly serialized header must have valid magic bytes.";
 }
 
 // Spec 4.1: init() for list/extract on non-existent container must NOT create one.

@@ -218,8 +218,7 @@ def _assert_files_byte_equal(original: pathlib.Path, extracted: pathlib.Path) ->
 # TC-CAP-01
 # Container clearly too small for both files.
 #
-# BUG: currently 'scef create' exits 0 here (silent corruption).
-# EXPECTED: non-zero exit code at create time.
+# Expected: non-zero exit code at create time.
 # ---------------------------------------------------------------------------
 
 class TestCreateOverflowFarTooSmall:
@@ -234,8 +233,6 @@ class TestCreateOverflowFarTooSmall:
         capacity (21472 B).  The implementation must detect this before or
         during the write phase and exit with a non-zero return code.
 
-        This test is expected to FAIL against the current (buggy) code.
-        It will PASS once the fix is in place.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -256,7 +253,6 @@ class TestCreateOverflowFarTooSmall:
             f"{PDF_SIZE + DOCX_SIZE} raw bytes ({BOTH_ENC_SIZE} encrypted) "
             f"must exit non-zero — the files do not fit.\n"
             f"Container data capacity: {_data_capacity(CONTAINER_FAR_TOO_SMALL)} bytes.\n"
-            f"Current behaviour (BUG): exits 0 and silently overwrites data.\n"
             f"stderr: {result.stderr.strip()}\n"
             f"stdout: {result.stdout.strip()}"
         )
@@ -498,7 +494,6 @@ class TestCreateOverflowJustTooSmall:
         Encrypted data required: 512459 B.
         Deficit: 459 B.
 
-        This test is expected to FAIL against the current (buggy) code.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -520,7 +515,6 @@ class TestCreateOverflowJustTooSmall:
             f"< {BOTH_ENC_SIZE} B needed (deficit "
             f"{BOTH_ENC_SIZE - _data_capacity(CONTAINER_ONE_BLOCK_TOO_SMALL)} B).\n"
             f"This is 4096 B (one alignment unit) below the minimum fitting size.\n"
-            f"Current behaviour (BUG): exits 0 and silently corrupts the container.\n"
             f"stderr: {result.stderr.strip()}"
         )
 
@@ -543,7 +537,6 @@ class TestCreateOverflowSingleFile:
         consumed by four slot-reserved areas).  Creating a container of
         exactly 278528 B with the 448509 B PDF must therefore fail.
 
-        This test is expected to FAIL against the current (buggy) code.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -564,7 +557,6 @@ class TestCreateOverflowSingleFile:
             f"data capacity is "
             f"{_data_capacity(MINIMAL_CONTAINER_SIZE)} B, "
             f"encrypted PDF needs {PDF_ENC_SIZE} B.\n"
-            f"Current behaviour (BUG): exits 0 and silently corrupts the container.\n"
             f"stderr: {result.stderr.strip()}"
         )
 
@@ -651,7 +643,6 @@ class TestAddOverflow:
         The failure must be detected at add time, not silently overwrite data
         and then cause authentication errors on extract.
 
-        This test is expected to FAIL against the current (buggy) code.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -683,7 +674,6 @@ class TestAddOverflow:
             f"Remaining capacity after first PDF: "
             f"{_data_capacity(_PDF_ONLY_MIN_SIZE) - PDF_ENC_SIZE} B, "
             f"second PDF encrypted: {DOCX_ENC_SIZE} B.\n"
-            f"Current behaviour (BUG): exits 0 and silently corrupts the container.\n"
             f"stderr: {result.stderr.strip()}"
         )
 
