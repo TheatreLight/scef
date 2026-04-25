@@ -226,19 +226,26 @@ QStringList ScefController::listLogFiles() const
 
 QString ScefController::readLogFile(const QString& path, qint64 maxBytes) const
 {
+    if (maxBytes <= 0) {
+        return QStringLiteral("[invalid maxBytes]");
+    }
+
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return QString::fromUtf8("[cannot open: ") + path + QStringLiteral("]");
 
     QString prefix;
     const qint64 size = file.size();
-    if (maxBytes > 0 && size > maxBytes) {
-        file.seek(size - maxBytes);
+    if (size > maxBytes) {
+        if (!file.seek(size - maxBytes)) {
+            return QStringLiteral("[cannot seek: ") + path + QStringLiteral("]");
+        }
         prefix = QStringLiteral("... (truncated, showing last %1 KiB) ...\n")
             .arg(maxBytes / 1024);
     }
 
-    return prefix + QString::fromUtf8(file.readAll());
+    const QByteArray bytes = file.read(maxBytes);
+    return prefix + QString::fromUtf8(bytes);
 }
 
 FileListModel* ScefController::fileListModel() const

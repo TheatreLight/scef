@@ -40,7 +40,7 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
                         header.getSaltData().data(), header.getSaltData().size());
     kek_ready_ = true;
     dek_ready_ = false; // KEK changed; DEK must be re-derived via unwrapDek.
-    LOG_DEBUG("deriveKek: KEK ready, kek[0..2]=%02x%02x%02x", kek_[0], kek_[1], kek_[2]);
+    LOG_DEBUG("deriveKek: KEK ready");
 }
 
 void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
@@ -113,8 +113,7 @@ void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
     }
     std::copy(buf.begin(), buf.end(), dek_.begin());
     dek_ready_ = true;
-    LOG_DEBUG("unwrapDek: DEK decrypted successfully, dek[0..2]=%02x%02x%02x",
-              dek_[0], dek_[1], dek_[2]);
+    LOG_DEBUG("unwrapDek: DEK decrypted successfully");
 }
 
 std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data, size_t size) const {
