@@ -157,10 +157,7 @@ void FileManager::initCryptoForCreate() {
     crypto_->generateSalt(header_->getSaltData());
     LOG_DEBUG("initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
               header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
-    {
-        BenchMeasurerGuard bench("FileManager::derive_kek");
-        crypto_->deriveKek(password_, *header_);
-    }
+    crypto_->deriveKek(password_, *header_);
     LOG_DEBUG("initCryptoForCreate: KEK derived, password length was %zu", password_.size());
 
     // Zero the password immediately after deriving the KEK.
@@ -171,10 +168,7 @@ void FileManager::initCryptoForCreate() {
     std::array<uint8_t, NONCE_SIZE> dekNonce{};
     std::array<uint8_t, DEK_SIZE>   encryptedDek{};
     std::array<uint8_t, AUTH_TAG_SIZE> dekAuthTag{};
-    {
-        BenchMeasurerGuard bench("FileManager::wrap_dek");
-        crypto_->wrapDek(dekNonce, encryptedDek, dekAuthTag);
-    }
+    crypto_->wrapDek(dekNonce, encryptedDek, dekAuthTag);
     LOG_DEBUG("initCryptoForCreate: DEK wrapped, nonce[0..2]=%02x%02x%02x, tag[0..2]=%02x%02x%02x",
         dekNonce[0], dekNonce[1], dekNonce[2], dekAuthTag[0], dekAuthTag[1], dekAuthTag[2]);
 
@@ -223,6 +217,7 @@ void FileManager::computeAndStoreHeaderHmac() {
 }
 
 void FileManager::verifyHeaderHmac() {
+    BenchMeasurerGuard bench("FileManager::verifyHeaderHmac");
     auto protectedBytes = header_->hmacProtectedBytes();
     auto expectedHmac   = crypto_->computeHmac(protectedBytes.data(), protectedBytes.size());
     const auto& storedHmac = header_->storedHmac();
@@ -365,6 +360,7 @@ void FileManager::writeFileTableToAllSlots() {
 // ---- public operations ----
 
 void FileManager::readMeta() {
+    BenchMeasurerGuard bench("FileManager::readMeta TOTAL");
     // Crash resilience strategy (spec 4.6.3): try all 4 slots, first with
     // valid HMAC wins.  KEK is derived at most twice (once per distinct salt).
 
@@ -435,10 +431,7 @@ void FileManager::readMeta() {
                 kekP    = header_->getKdfP();
                 LOG_DEBUG("readMeta: KEK derived (derivation #%d)", kekDerivations);
             }
-            {
-                BenchMeasurerGuard bench("FileManager::hmac_verify");
-                verifyHeaderHmac();
-            }
+            verifyHeaderHmac();
             unwrapDekFromHeader();
             activeSlotOffset_ = slotOff;
             recovered = true;
@@ -476,6 +469,7 @@ void FileManager::readMeta() {
 }
 
 void FileManager::extract(const std::string& pathToOutputFolder) {
+    BenchMeasurerGuard bench("FileManager::extract TOTAL");
     std::vector<FileEntry> entries;
     if (filesList_.empty()) {
         entries = fileTable_.getFilesTable();
@@ -528,6 +522,7 @@ void FileManager::write() {
 }
 
 void FileManager::add() {
+    BenchMeasurerGuard bench("FileManager::add TOTAL");
     // Resume from the persisted end-of-data position.
     uint64_t dataEnd = fileTable_.getNextWriteOffset();
     uint64_t containerSize = header_->getContainerSize();
@@ -617,6 +612,7 @@ void FileManager::logFragmentedWriteStats() const {
 }
 
 void FileManager::readFilesTable() {
+    BenchMeasurerGuard bench("FileManager::readFilesTable");
     uint64_t tableOffset = activeSlotOffset_ + header_->getHeaderSize();
 
     uint32_t encSize = header_->getFileTableSize();
@@ -631,10 +627,7 @@ void FileManager::readFilesTable() {
     containerFile_.readAt(tableOffset, encData.data(), encSize);
 
     std::string decrypted(plainSize, '\0');
-    {
-        BenchMeasurerGuard bench("FileManager::file_table_decrypt");
-        crypto_->decrypt(encData.data(), decrypted.data(), plainSize);
-    }
+    crypto_->decrypt(encData.data(), decrypted.data(), plainSize);
     fileTable_.deserialize(decrypted);
     LOG_DEBUG("readFilesTable: decrypted %zu bytes, %zu file(s) loaded",
               plainSize, fileTable_.getFilesTable().size());

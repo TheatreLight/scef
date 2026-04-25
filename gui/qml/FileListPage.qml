@@ -247,6 +247,13 @@ Page {
             Item { Layout.fillWidth: true }
 
             Button {
+                text: "Logs"
+                flat: true
+                enabled: !controller.busy
+                onClicked: stackView.push(logsPage)
+            }
+
+            Button {
                 text: "Back"
                 enabled: !controller.busy
                 onClicked: {

@@ -1,4 +1,5 @@
 #include "CryptoManager.h"
+#include "BenchMeasurerGuard.h"
 #include "CryptoContext.h"
 #include "Header.h"
 #include "Logger.h"
@@ -25,6 +26,7 @@ CryptoManager::~CryptoManager() {
 }
 
 void CryptoManager::deriveKek(const std::string& password, Header& header) {
+    BenchMeasurerGuard bench("CryptoManager::deriveKek");
     LOG_DEBUG("deriveKek: Argon2id(m=%u KiB, t=%u, p=%u), password_len=%zu, salt[0..2]=%02x%02x%02x",
               header.getKdfMKib(), header.getKdfT(), header.getKdfP(), password.size(),
               header.getSaltData()[0], header.getSaltData()[1], header.getSaltData()[2]);
@@ -43,6 +45,7 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
 
 void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
     std::array<uint8_t, 16>& dek_auth_tag_out) {
+    BenchMeasurerGuard bench("CryptoManager::wrapDek");
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }

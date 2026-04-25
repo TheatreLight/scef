@@ -1,6 +1,7 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -47,6 +48,9 @@ public:
     // Messages below this level are silently discarded.
     static void setLevel(LogLevel level);
 
+    static void setBenchEnabled(bool enabled);
+    [[nodiscard]] static bool benchEnabled();
+
     // Write a formatted message at the given level.
     // Not intended for direct use — prefer the LOG_* macros.
     static void log(LogLevel level, const char* fmt, ...);
@@ -77,6 +81,7 @@ private:
     static std::FILE*            file_;
     static std::filesystem::path dir_;
     static LogLevel              minLevel_;
+    static std::atomic<bool>     benchEnabled_;
     static bool                  mirrorToConsole_;
 };
 
