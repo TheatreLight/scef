@@ -29,6 +29,17 @@ static std::string win32_error_string(DWORD err) {
     return std::string(buf, n);
 }
 
+NativeFile::NativeFile()
+{
+    LOG_INFO("NativeFile::NativeFile()");
+}
+
+NativeFile::~NativeFile()
+{
+    LOG_INFO("NativeFile::~NativeFile()");
+    close();
+}
+
 void NativeFile::open(const std::string& path, OpenMode mode) {
     close();
 
@@ -201,10 +212,6 @@ void NativeFile::syncToDevice() {
         throw std::runtime_error("NativeFile::syncToDevice FlushFileBuffers failed for '" +
             path_ + "': " + win32_error_string(err));
     }
-}
-
-NativeFile::~NativeFile() {
-    close();
 }
 
 NativeFile::NativeFile(NativeFile&& other) noexcept

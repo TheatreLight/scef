@@ -19,12 +19,19 @@ EncryptPipeline::EncryptPipeline(CryptoManager& crypto, Config config)
     , readQueue_(config.queue_capacity)
     , writeQueue_(config.queue_capacity * 2)
 {
+    LOG_INFO("EncryptPipeline::EncryptPipeline()");
+}
+
+EncryptPipeline::~EncryptPipeline()
+{
+    LOG_INFO("EncryptPipeline::~EncryptPipeline()");
 }
 
 void EncryptPipeline::run(const std::vector<std::string>& files, FragmentedIO& io,
     FileTable& fileTable, Header& header, uint64_t startOffset, const std::atomic<bool>& cancelFlag,
     std::function<void(uint64_t, uint64_t)> progressCallback)
 {
+    LOG_INFO("Call EncryptPipeline::run()");
     uint64_t totalBytes = 0;
     for (const auto& path : files) {
         std::error_code ec;
@@ -47,6 +54,7 @@ void EncryptPipeline::run(const std::vector<std::string>& files, FragmentedIO& i
     BenchMeasurerGuard guard("EncryptPipeline::run", totalBytes);
 
     activeWorkers_.store(config_.worker_count);
+    LOG_DEBUG("EncryptPipeline::run: activeWorkers=%zu", config_.worker_count);
 
     pool_.detach_task([this, &files, &cancelFlag]() {
         readerTask(files, cancelFlag);
@@ -178,6 +186,7 @@ void EncryptPipeline::writerLoop(FragmentedIO& io, FileTable& fileTable, Header&
     const std::atomic<bool>& cancelFlag, std::function<void(uint64_t, uint64_t)> progressCallback,
     uint64_t totalBytes)
 {
+    LOG_INFO("Call EncryptPipeline::writerLoop(): totalBytes=%zu", totalBytes);
     BenchMeasurerGuard guard("EncryptPipeline::writerLoop");
     uint64_t nextExpected = 0;
     std::map<uint64_t, ProcessedChunk> reorderBuf;

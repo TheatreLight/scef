@@ -96,6 +96,7 @@ Spec Table 4.2 -- SCEF v1.0 header layout:
 class Header {
 public:
     Header();
+    ~Header();
     void read(const HeaderBuffer& buf);
     void serialize();
 

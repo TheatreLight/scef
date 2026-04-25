@@ -1,4 +1,5 @@
 #include "Header.h"
+#include "Logger.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -6,8 +7,15 @@
 #include <sstream>
 
 Header::Header()
-: container_size_(DEFAULT_CONTAINER_SIZE){
+: container_size_(DEFAULT_CONTAINER_SIZE)
+{
+    LOG_INFO("Header::Header()");
     createBuffer();
+}
+
+Header::~Header()
+{
+    LOG_INFO("Header::~Header()");
 }
 
 void Header::read(const HeaderBuffer& buf) {
