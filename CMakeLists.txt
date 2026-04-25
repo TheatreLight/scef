@@ -5,7 +5,7 @@ set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg/scripts/buildsyst
 
 project(scef
     VERSION 0.1.0
-    LANGUAGES CXX
+    LANGUAGES C CXX
     DESCRIPTION "Self-contained Encrypted Container Format"
 )
 
@@ -42,6 +42,14 @@ endif()
 
 find_package(nlohmann_json CONFIG REQUIRED)
 
+add_library(zxcvbn STATIC third_party/zxcvbn-c/zxcvbn.c)
+target_include_directories(zxcvbn PUBLIC third_party/zxcvbn-c)
+if(MSVC)
+    target_compile_options(zxcvbn PRIVATE /w)
+else()
+    target_compile_options(zxcvbn PRIVATE -w)
+endif()
+
 # vcpkg may place Botan headers in include/botan/ instead of include/botan-3/botan/,
 # causing the Botan CMake config to fail to set include directories.
 # Detect and fix this by adding the vcpkg include path directly.
@@ -70,6 +78,7 @@ add_library(scef_lib STATIC
     src/DecryptPipeline.cpp
     src/NativeFile.cpp
     src/BenchMeasurerGuard.cpp
+    src/PasswordStrengthEstimator.cpp
 )
 
 target_include_directories(scef_lib PUBLIC
@@ -94,6 +103,7 @@ else()
 endif()
 
 target_link_libraries(scef_lib PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(scef_lib PRIVATE zxcvbn)
 
 # --- CLI executable ---
 add_executable(scef src/main.cpp)
@@ -111,6 +121,7 @@ if(SCEF_BUILD_TESTS)
     add_executable(scef_unit_tests
         tests/unit/test_scef.cpp
         tests/unit/test_native_file.cpp
+        tests/unit/test_password_strength.cpp
     )
 
     target_link_libraries(scef_unit_tests PRIVATE
