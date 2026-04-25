@@ -15,17 +15,20 @@
 #include <stdexcept>
 
 CryptoManager::CryptoManager() {
+    LOG_INFO("CryptoManager::CryptoManager()");
     kek_.fill(0);
     dek_.fill(0);
 }
 
 CryptoManager::~CryptoManager() {
+    LOG_INFO("CryptoManager::~CryptoManager()");
     // Zero key material on destruction using Botan's scrub (resistant to optimizer removal).
     Botan::secure_scrub_memory(kek_.data(), KEK_SIZE);
     Botan::secure_scrub_memory(dek_.data(), DEK_SIZE);
 }
 
 void CryptoManager::deriveKek(const std::string& password, Header& header) {
+    LOG_INFO("Call CryptoManager::deriveKek()");
     BenchMeasurerGuard bench("CryptoManager::deriveKek");
     LOG_DEBUG("deriveKek: Argon2id(m=%u KiB, t=%u, p=%u), password_len=%zu, salt[0..2]=%02x%02x%02x",
               header.getKdfMKib(), header.getKdfT(), header.getKdfP(), password.size(),
@@ -40,11 +43,11 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
                         header.getSaltData().data(), header.getSaltData().size());
     kek_ready_ = true;
     dek_ready_ = false; // KEK changed; DEK must be re-derived via unwrapDek.
-    LOG_DEBUG("deriveKek: KEK ready");
 }
 
 void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
     std::array<uint8_t, 16>& dek_auth_tag_out) {
+    LOG_INFO("Call CryptoManager::wrapDek()");
     BenchMeasurerGuard bench("CryptoManager::wrapDek");
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
@@ -81,9 +84,10 @@ void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<u
               dek_auth_tag_out[0], dek_auth_tag_out[1], dek_auth_tag_out[2]);
 }
 
-void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
-                               const std::array<uint8_t, DEK_SIZE>& encrypted_dek,
-                               const std::array<uint8_t, 16>& dek_auth_tag) {
+void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce, const std::array<uint8_t, DEK_SIZE>& encrypted_dek,
+    const std::array<uint8_t, 16>& dek_auth_tag) 
+{
+    LOG_INFO("Call CryptoManager::unwrapDek()");
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }
@@ -113,10 +117,10 @@ void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
     }
     std::copy(buf.begin(), buf.end(), dek_.begin());
     dek_ready_ = true;
-    LOG_DEBUG("unwrapDek: DEK decrypted successfully");
 }
 
 std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data, size_t size) const {
+    LOG_INFO("Call CryptoManager::computeHmac()");
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }

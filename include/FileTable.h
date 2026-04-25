@@ -27,7 +27,7 @@ struct FileEntry {
 class FileTable {
 public:
     FileTable();
-    ~FileTable() = default;
+    ~FileTable();
 
     void addFileEntry(const std::string& pathToFile, const std::string& checkSum, size_t offset,
                       size_t actual_size);

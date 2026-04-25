@@ -1,4 +1,5 @@
 #include "DecryptPipeline.h"
+#include "BenchMeasurerGuard.h"
 #include "CryptoContext.h"
 #include "Header.h"
 #include "Logger.h"
@@ -8,7 +9,6 @@
 #include "botan/hex.h"
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
 #include <map>
 
@@ -19,13 +19,18 @@ DecryptPipeline::DecryptPipeline(CryptoManager& crypto, Config config)
     , readQueue_(config.queue_capacity)
     , writeQueue_(config.queue_capacity * 2)
 {
+    LOG_INFO("DecryptPipeline::DecryptPipeline()");
 }
 
-void DecryptPipeline::run(const std::vector<FileEntry>& entries,
-                           FragmentedIO& io,
-                           const std::string& outputDir,
-                           const std::atomic<bool>& cancelFlag,
-                           std::function<void(uint64_t, uint64_t)> progressCallback) {
+DecryptPipeline::~DecryptPipeline() {
+    LOG_INFO("DecryptPipeline::~DecryptPipeline()");
+}
+
+void DecryptPipeline::run(const std::vector<FileEntry>& entries, FragmentedIO& io,
+    const std::string& outputDir, const std::atomic<bool>& cancelFlag,
+    std::function<void(uint64_t, uint64_t)> progressCallback)
+{
+    LOG_INFO("Call DecryptPipeline::run(): entries.size=%zu", entries.size());
     uint64_t totalBytes = 0;
     for (const auto& e : entries) totalBytes += e.size;
 
@@ -34,8 +39,7 @@ void DecryptPipeline::run(const std::vector<FileEntry>& entries,
     LOG_BENCH("DecryptPipeline: %zu file(s), %llu bytes total, %zu workers, pool threads=%zu",
               entries.size(), totalBytes, config_.worker_count, config_.worker_count + 1);
 
-    auto pipelineStart = std::chrono::steady_clock::now();
-
+    BenchMeasurerGuard guard("DecryptPipeline::run", totalBytes);
     activeWorkers_.store(config_.worker_count);
 
     pool_.detach_task([this, &entries, &io, &cancelFlag]() {
@@ -58,16 +62,12 @@ void DecryptPipeline::run(const std::vector<FileEntry>& entries,
     }
 
     pool_.wait();
-
-    auto pipelineEnd = std::chrono::steady_clock::now();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(pipelineEnd - pipelineStart).count();
-    double throughput = (ms > 0) ? (static_cast<double>(totalBytes) / 1024.0 / 1024.0) / (ms / 1000.0) : 0;
-    LOG_BENCH("DecryptPipeline: finished in %lld ms (%.1f MB/s)", ms, throughput);
 }
 
-void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries,
-                                  FragmentedIO& io,
-                                  const std::atomic<bool>& cancelFlag) {
+void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries, FragmentedIO& io,
+    const std::atomic<bool>& cancelFlag)
+{
+    BenchMeasurerGuard guard("DecryptPipeline::readerTask");
     uint64_t seqNo = 0;
 
     for (const auto& entry : entries) {
@@ -121,6 +121,7 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries,
 }
 
 void DecryptPipeline::workerTask() {
+    BenchMeasurerGuard guard("DecryptPipeline::workerTask");
     CryptoContext ctx = CryptoContext::makeDecryptor(
         crypto_.getDek(), crypto_.getDekSize());
 
@@ -150,10 +151,11 @@ void DecryptPipeline::workerTask() {
     }
 }
 
-void DecryptPipeline::writerLoop(const std::string& outputDir,
-                                  const std::atomic<bool>& cancelFlag,
-                                  std::function<void(uint64_t, uint64_t)> progressCallback,
-                                  uint64_t totalBytes) {
+void DecryptPipeline::writerLoop(const std::string& outputDir, const std::atomic<bool>& cancelFlag,
+    std::function<void(uint64_t, uint64_t)> progressCallback, uint64_t totalBytes)
+{
+    LOG_INFO("Call DecryptPipeline::writerLoop(): totalBytes=%zu", totalBytes);
+    BenchMeasurerGuard guard("DecryptPipeline::writerLoop");
     uint64_t nextExpected = 0;
     std::map<uint64_t, ProcessedChunk> reorderBuf;
     uint64_t bytesWritten = 0;
