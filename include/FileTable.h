@@ -1,9 +1,6 @@
 #ifndef FILE_TABLE_H
 #define FILE_TABLE_H
 
-#include "botan/hash.h"
-
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -32,18 +29,11 @@ public:
     FileTable();
     ~FileTable() = default;
 
-    void updateChecksum(const void* chunk, size_t size);
-    // Finalize and return the hex-encoded SHA-256 digest, then reset the hasher.
-    std::string getChecksum();
-    // Explicitly reset the hasher state. Call at the start of each new file
-    // before the first updateChecksum() to guarantee a clean slate.
-    void resetChecksum();
     void addFileEntry(const std::string& pathToFile, const std::string& checkSum, size_t offset,
                       size_t actual_size);
     std::string serialize();
     void deserialize(const std::string& data);
     std::string to_string(bool isFull = false) const;
-    void reset();
     const FileEntry& getFileInfoByName(const std::string& fName);
     const std::vector<FileEntry>& getFilesTable() const;
 
@@ -55,7 +45,6 @@ public:
 
 private:
     std::vector<FileEntry> filesTable_;
-    std::unique_ptr<Botan::HashFunction> funcSHA_;
     uint64_t next_write_offset_ = 0;
 };
 

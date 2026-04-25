@@ -1,10 +1,15 @@
 #include "ScefController.h"
 #include "FileManager.h"
 #include "KdfProfiles.h"
+#include "Logger.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QFileInfoList>
 #include <QPointer>
+#include <QStringList>
 #include <QUrl>
 
 #include <botan/mem_ops.h>
@@ -201,6 +206,48 @@ void ScefController::closeContainer()
     emit containerOpenChanged();
 }
 
+QString ScefController::logDirPath() const
+{
+    return QCoreApplication::applicationDirPath() + QStringLiteral("/logs");
+}
+
+QStringList ScefController::listLogFiles() const
+{
+    QDir dir(logDirPath());
+    const QFileInfoList entries = dir.entryInfoList(QStringList() << QStringLiteral("*.log"),
+                                                    QDir::Files,
+                                                    QDir::Time);
+    QStringList files;
+    files.reserve(entries.size());
+    for (const QFileInfo& entry : entries)
+        files.push_back(entry.absoluteFilePath());
+    return files;
+}
+
+QString ScefController::readLogFile(const QString& path, qint64 maxBytes) const
+{
+    if (maxBytes <= 0) {
+        return QStringLiteral("[invalid maxBytes]");
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString::fromUtf8("[cannot open: ") + path + QStringLiteral("]");
+
+    QString prefix;
+    const qint64 size = file.size();
+    if (size > maxBytes) {
+        if (!file.seek(size - maxBytes)) {
+            return QStringLiteral("[cannot seek: ") + path + QStringLiteral("]");
+        }
+        prefix = QStringLiteral("... (truncated, showing last %1 KiB) ...\n")
+            .arg(maxBytes / 1024);
+    }
+
+    const QByteArray bytes = file.read(maxBytes);
+    return prefix + QString::fromUtf8(bytes);
+}
+
 FileListModel* ScefController::fileListModel() const
 {
     return fileListModel_;
@@ -224,6 +271,20 @@ bool ScefController::isBusy() const
 QString ScefController::currentContainerPath() const
 {
     return currentContainerDir_;
+}
+
+bool ScefController::benchEnabled() const
+{
+    return Logger::benchEnabled();
+}
+
+void ScefController::setBenchEnabled(bool enabled)
+{
+    if (enabled == Logger::benchEnabled())
+        return;
+
+    Logger::setBenchEnabled(enabled);
+    emit benchEnabledChanged();
 }
 
 void ScefController::runAsync(std::unique_ptr<FileManager> fm,

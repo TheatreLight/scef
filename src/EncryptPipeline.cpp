@@ -27,7 +27,7 @@ void EncryptPipeline::run(const std::vector<std::string>& files, FragmentedIO& i
     uint64_t totalBytes = 0;
     for (const auto& path : files) {
         std::error_code ec;
-        uint8_t fileSize = std::filesystem::file_size(path, ec);
+        uint64_t fileSize = std::filesystem::file_size(path, ec);
         if (ec) {
             LOG_ERROR("EncryptPipeline: failed to get file size for %s: %s", path.c_str(), ec.message().c_str());
             continue;

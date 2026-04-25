@@ -18,6 +18,7 @@ qt_add_qml_module(scef-gui
         qml/CreatePage.qml
         qml/PasswordDialog.qml
         qml/FileListPage.qml
+        qml/LogsPage.qml
         qml/utils.js
 )
 

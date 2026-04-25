@@ -2,8 +2,11 @@
 #define SCEF_CONTROLLER_H
 
 #include <QObject>
+#include <QString>
+#include <QStringList>
 #include <QThread>
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -19,6 +22,7 @@ class ScefController : public QObject {
     Q_PROPERTY(bool containerOpen READ isContainerOpen NOTIFY containerOpenChanged)
     Q_PROPERTY(bool busy READ isBusy NOTIFY busyChanged)
     Q_PROPERTY(QString currentContainerPath READ currentContainerPath NOTIFY containerOpenChanged)
+    Q_PROPERTY(bool benchEnabled READ benchEnabled WRITE setBenchEnabled NOTIFY benchEnabledChanged)
 
 public:
     explicit ScefController(QObject* parent = nullptr);
@@ -43,15 +47,22 @@ public:
 
     Q_INVOKABLE void closeContainer();
 
+    Q_INVOKABLE QString logDirPath() const;
+    Q_INVOKABLE QStringList listLogFiles() const;
+    Q_INVOKABLE QString readLogFile(const QString& path, qint64 maxBytes = 1048576) const;
+
     FileListModel* fileListModel() const;
     DriveListModel* driveListModel() const;
     bool isContainerOpen() const;
     bool isBusy() const;
     QString currentContainerPath() const;
+    bool benchEnabled() const;
+    void setBenchEnabled(bool enabled);
 
 signals:
     void containerOpenChanged();
     void busyChanged();
+    void benchEnabledChanged();
     void operationFinished(const QString& error);
 
 private:

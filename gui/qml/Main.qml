@@ -33,4 +33,9 @@ Window {
         id: fileListPage
         FileListPage {}
     }
+
+    Component {
+        id: logsPage
+        LogsPage {}
+    }
 }

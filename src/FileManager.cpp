@@ -4,6 +4,7 @@
 #include "Header.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
+#include "BenchMeasurerGuard.h"
 
 #include "botan/mem_ops.h"
 #include "botan/secmem.h"
@@ -66,19 +67,6 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
 
 std::array<uint64_t, SLOT_COUNT> FileManager::computeSlotOffsets() const {
     return ::computeSlotOffsets(header_->getContainerSize(), HEADER_SIZE);
-}
-
-bool FileManager::overlapsSlot(uint64_t pos, uint64_t size,
-                                const std::array<uint64_t, SLOT_COUNT>& slots) const {
-    uint64_t slotReserved = header_->getHeaderSize() + header_->getMaxTableSize();
-    for (size_t i = 0; i < SLOT_COUNT; ++i) {
-        uint64_t slotEnd = slots[i] + slotReserved;
-        // Overlap when pos < slotEnd AND pos+size > slots[i]
-        if (pos < slotEnd && pos + size > slots[i]) {
-            return true;
-        }
-    }
-    return false;
 }
 
 uint64_t FileManager::skipSlots(uint64_t pos) const {
@@ -229,6 +217,7 @@ void FileManager::computeAndStoreHeaderHmac() {
 }
 
 void FileManager::verifyHeaderHmac() {
+    BenchMeasurerGuard bench("FileManager::verifyHeaderHmac");
     auto protectedBytes = header_->hmacProtectedBytes();
     auto expectedHmac   = crypto_->computeHmac(protectedBytes.data(), protectedBytes.size());
     const auto& storedHmac = header_->storedHmac();
@@ -288,6 +277,7 @@ uint64_t FileManager::computeRequiredDataBytes() const {
 // ---- container creation helpers ----
 
 void FileManager::createContainerFile() {
+    BenchMeasurerGuard bench("FileManager::createContainerFile");
     uint64_t containerSize = header_->getContainerSize();
     uint32_t maxTableSize = header_->getMaxTableSize();
 
@@ -333,6 +323,7 @@ void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>&
 }
 
 void FileManager::writeAllSlots() {
+    BenchMeasurerGuard bench("FileManager::writeAllSlots");
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         writeHeaderAt(slotOffsets_[i]);
         containerFile_.syncToDevice();   // spec §3.1.3: one fsync per slot
@@ -340,6 +331,8 @@ void FileManager::writeAllSlots() {
 }
 
 void FileManager::writeFileTableToAllSlots() {
+    BenchMeasurerGuard bench("FileManager::writeFileTableToAllSlots");
+
     std::string serialized = fileTable_.serialize();
     size_t plainSize = serialized.length();
     size_t encSize = plainSize + NONCE_SIZE + AUTH_TAG_SIZE;
@@ -367,6 +360,7 @@ void FileManager::writeFileTableToAllSlots() {
 // ---- public operations ----
 
 void FileManager::readMeta() {
+    BenchMeasurerGuard bench("FileManager::readMeta TOTAL");
     // Crash resilience strategy (spec 4.6.3): try all 4 slots, first with
     // valid HMAC wins.  KEK is derived at most twice (once per distinct salt).
 
@@ -475,6 +469,7 @@ void FileManager::readMeta() {
 }
 
 void FileManager::extract(const std::string& pathToOutputFolder) {
+    BenchMeasurerGuard bench("FileManager::extract TOTAL");
     std::vector<FileEntry> entries;
     if (filesList_.empty()) {
         entries = fileTable_.getFilesTable();
@@ -500,21 +495,13 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
 
 void FileManager::write() {
     LOG_DEBUG("FileManager::write: enter");
+    BenchMeasurerGuard bench("FileManager::write TOTAL");
     if (filesList_.empty()) {
         throw std::runtime_error("No input files specified for create");
     }
 
-    auto t0 = std::chrono::steady_clock::now();
     createContainerFile();
-    auto t1 = std::chrono::steady_clock::now();
-    LOG_BENCH("write: createContainerFile took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
-
     initCryptoForCreate();
-    auto t2 = std::chrono::steady_clock::now();
-    LOG_BENCH("write: initCryptoForCreate (KDF + wrapDEK) took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count());
-
     computeAndStoreHeaderHmac();
 
     uint64_t available = computeAvailableDataCapacity();
@@ -526,26 +513,16 @@ void FileManager::write() {
     }
 
     writeAllSlots();
-    auto t3 = std::chrono::steady_clock::now();
-    LOG_BENCH("write: writeAllSlots took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count());
 
     size_t endPos = writeChunks(header_->getHeaderSize() + header_->getMaxTableSize());
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
-    auto t4 = std::chrono::steady_clock::now();
-    LOG_BENCH("write: writeChunks (pipeline encryption) took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count());
     logFragmentedWriteStats();
 
     writeFileTableToAllSlots();
-    auto t5 = std::chrono::steady_clock::now();
-    LOG_BENCH("write: writeFileTableToAllSlots took %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count());
-    LOG_BENCH("write: TOTAL %lld ms",
-             std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count());
 }
 
 void FileManager::add() {
+    BenchMeasurerGuard bench("FileManager::add TOTAL");
     // Resume from the persisted end-of-data position.
     uint64_t dataEnd = fileTable_.getNextWriteOffset();
     uint64_t containerSize = header_->getContainerSize();
@@ -587,10 +564,6 @@ void FileManager::add() {
 
 // ---- print helpers ----
 
-void FileManager::printHeader() const {
-    std::cout << header_->to_string();
-}
-
 void FileManager::printFilesTable() const {
     std::cout << fileTable_.to_string();
 }
@@ -612,6 +585,8 @@ FragmentedIO FileManager::makeFragmentedIO() {
 }
 
 size_t FileManager::writeChunks(size_t offset) {
+    BenchMeasurerGuard bench("FileManager::writeChunks");
+
     size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
     EncryptPipeline::Config cfg{workerCount, 2 * workerCount};
     EncryptPipeline pipeline(*crypto_, cfg);
@@ -619,10 +594,6 @@ size_t FileManager::writeChunks(size_t offset) {
     std::atomic<bool> noCancel{false};
     pipeline.run(filesList_, fragmentedIO, fileTable_, *header_, offset, noCancel, nullptr);
     return pipeline.endOffset();
-}
-
-void FileManager::resetFragmentedWriteStats() {
-    fragmentedWriteStats_ = {};
 }
 
 void FileManager::logFragmentedWriteStats() const {
@@ -640,19 +611,8 @@ void FileManager::logFragmentedWriteStats() const {
             fragmentedWriteStats_.writeTime).count()));
 }
 
-void FileManager::readHeader() {
-    HeaderBuffer headerBuffer;
-    char* headerPtr = reinterpret_cast<char*>(headerBuffer.data());
-    containerFile_.readAt(0, headerPtr, HEADER_SIZE);
-    header_->read(headerBuffer);
-    LOG_DEBUG("readHeader: container_size=%llu, block_size=%u, "
-              "file_table_size=%u, max_table_size=%u, kdf(m=%u KiB, t=%u, p=%u)",
-              header_->getContainerSize(), header_->getChunkSize(),
-              header_->getFileTableSize(), header_->getMaxTableSize(),
-              header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
-}
-
 void FileManager::readFilesTable() {
+    BenchMeasurerGuard bench("FileManager::readFilesTable");
     uint64_t tableOffset = activeSlotOffset_ + header_->getHeaderSize();
 
     uint32_t encSize = header_->getFileTableSize();

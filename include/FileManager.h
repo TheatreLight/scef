@@ -73,7 +73,6 @@ public:
     // Used by the GUI to reuse an already-open FileManager for add/extract.
     void setFilesList(const std::vector<std::string>& filesList) { filesList_ = filesList; }
 
-    void printHeader() const;
     void printFilesTable() const;
 
     // Returned reference is valid only while this FileManager instance is alive.
@@ -82,11 +81,6 @@ public:
 private:
     // Returns array of slot offsets computed from header fields.
     std::array<uint64_t, SLOT_COUNT> computeSlotOffsets() const;
-
-    // Returns true if [pos, pos+size) overlaps any slot reserved area.
-    // A slot reserved area is [slot_offset, slot_offset + header_size + max_table_size).
-    bool overlapsSlot(uint64_t pos, uint64_t size,
-                      const std::array<uint64_t, SLOT_COUNT>& slots) const;
 
     // Advance pos past any slot area it would land on.
     uint64_t skipSlots(uint64_t pos) const;
@@ -160,7 +154,6 @@ private:
     // Must be called after validateKdfParamsAndDeriveKek().
     void verifyHeaderHmac();
 
-    void readHeader();
     void readFilesTable();
 
     struct FragmentedWriteStats {
@@ -173,7 +166,6 @@ private:
         uint64_t fragmentedWrites = 0;
     };
 
-    void resetFragmentedWriteStats();
     void logFragmentedWriteStats() const;
 
     std::unique_ptr<Header> header_;

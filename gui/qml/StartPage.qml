@@ -291,6 +291,23 @@ Page {
             }
         }
 
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            spacing: 12
+
+            Switch {
+                text: "Enable benchmarks"
+                checked: controller.benchEnabled
+                onToggled: controller.benchEnabled = checked
+            }
+
+            Button {
+                text: "View logs"
+                flat: true
+                onClicked: stackView.push(logsPage)
+            }
+        }
+
         // Error label
         Label {
             id: errorLabel

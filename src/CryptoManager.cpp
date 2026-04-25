@@ -1,4 +1,5 @@
 #include "CryptoManager.h"
+#include "BenchMeasurerGuard.h"
 #include "CryptoContext.h"
 #include "Header.h"
 #include "Logger.h"
@@ -25,6 +26,7 @@ CryptoManager::~CryptoManager() {
 }
 
 void CryptoManager::deriveKek(const std::string& password, Header& header) {
+    BenchMeasurerGuard bench("CryptoManager::deriveKek");
     LOG_DEBUG("deriveKek: Argon2id(m=%u KiB, t=%u, p=%u), password_len=%zu, salt[0..2]=%02x%02x%02x",
               header.getKdfMKib(), header.getKdfT(), header.getKdfP(), password.size(),
               header.getSaltData()[0], header.getSaltData()[1], header.getSaltData()[2]);
@@ -38,11 +40,12 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
                         header.getSaltData().data(), header.getSaltData().size());
     kek_ready_ = true;
     dek_ready_ = false; // KEK changed; DEK must be re-derived via unwrapDek.
-    LOG_DEBUG("deriveKek: KEK ready, kek[0..2]=%02x%02x%02x", kek_[0], kek_[1], kek_[2]);
+    LOG_DEBUG("deriveKek: KEK ready");
 }
 
 void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<uint8_t, DEK_SIZE>& encrypted_dek_out,
     std::array<uint8_t, 16>& dek_auth_tag_out) {
+    BenchMeasurerGuard bench("CryptoManager::wrapDek");
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }
@@ -110,8 +113,7 @@ void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce,
     }
     std::copy(buf.begin(), buf.end(), dek_.begin());
     dek_ready_ = true;
-    LOG_DEBUG("unwrapDek: DEK decrypted successfully, dek[0..2]=%02x%02x%02x",
-              dek_[0], dek_[1], dek_[2]);
+    LOG_DEBUG("unwrapDek: DEK decrypted successfully");
 }
 
 std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data, size_t size) const {

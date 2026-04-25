@@ -69,6 +69,7 @@ add_library(scef_lib STATIC
     src/EncryptPipeline.cpp
     src/DecryptPipeline.cpp
     src/NativeFile.cpp
+    src/BenchMeasurerGuard.cpp
 )
 
 target_include_directories(scef_lib PUBLIC
@@ -97,6 +98,9 @@ target_link_libraries(scef_lib PUBLIC nlohmann_json::nlohmann_json)
 # --- CLI executable ---
 add_executable(scef src/main.cpp)
 target_link_libraries(scef PRIVATE scef_lib)
+
+# --- Benchmarks ---
+add_subdirectory(benchmarks)
 
 # --- Tests (optional) ---
 option(SCEF_BUILD_TESTS "Build unit tests" ON)

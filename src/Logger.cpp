@@ -16,6 +16,7 @@ std::mutex            Logger::mutex_;
 std::FILE*            Logger::file_           = nullptr;
 std::filesystem::path Logger::dir_;
 LogLevel              Logger::minLevel_       = LogLevel::INFO;
+std::atomic<bool>     Logger::benchEnabled_{true};
 bool                  Logger::mirrorToConsole_ = false;
 
 // ---------------------------------------------------------------------------
@@ -48,7 +49,19 @@ void Logger::setLevel(LogLevel level) {
     minLevel_ = level;
 }
 
+void Logger::setBenchEnabled(bool enabled) {
+    benchEnabled_.store(enabled, std::memory_order_relaxed);
+}
+
+bool Logger::benchEnabled() {
+    return benchEnabled_.load(std::memory_order_relaxed);
+}
+
 void Logger::log(LogLevel level, const char* fmt, ...) {
+    if (level == LogLevel::BENCH && !benchEnabled_.load(std::memory_order_relaxed)) {
+        return;
+    }
+
     // Format the user message into a local buffer (4 KiB is enough for any
     // single log line; overflow is silently truncated to avoid unbounded alloc).
     constexpr size_t BUF = 4096;
