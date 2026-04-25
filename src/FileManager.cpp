@@ -21,13 +21,21 @@
 #include <thread>
 
 FileManager::FileManager() {
+    LOG_INFO("FileManager::FileManager()");
     header_ = std::make_unique<Header>();
     crypto_ = std::make_unique<CryptoManager>();
 }
 
+FileManager::~FileManager() {
+    LOG_INFO("FileManager::~FileManager()");
+}
+
 void FileManager::init(const std::vector<std::string>& filesList, const std::string& pathToDir,
-                       uint64_t containerSize, uint32_t maxTableSize, bool createNew,
-                       const std::string& password) {
+    uint64_t containerSize, uint32_t maxTableSize, bool createNew, const std::string& password)
+{
+    LOG_INFO("FileManager::init: files=%zu, path=%s, containerSize=%llu, maxTableSize=%u",
+        filesList.size(), pathToDir.c_str(), containerSize, maxTableSize);
+
     containerFilePath_ = pathToDir + "/" + CONTAINER_FILE_NAME;
     container_size_param_ = containerSize;
     filesList_ = filesList;
@@ -59,8 +67,6 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
     }
     // For createNew, the file is opened inside createContainerFile() which is called
     // from write().
-
-    LOG_DEBUG("FileManager successfully initialized");
 }
 
 // ---- slot helpers ----
@@ -131,6 +137,8 @@ uint64_t FileManager::readFragmented(uint64_t offset, char* buf, size_t size) {
 // ---- KDF configuration ----
 
 void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p) {
+    LOG_INFO("Call FileManager::setKdfParams(): profile=%u, m=%u KiB, t=%u, p=%u",
+             static_cast<uint16_t>(profile), m_kib, t, p);
     if (profile != EKDFProfile::None) {
         const KdfProfileParams* params = getProfileParams(profile);
         if (!params) {
@@ -140,14 +148,11 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
         header_->setKdfMKib(params->m_kib);
         header_->setKdfT(params->t);
         header_->setKdfP(params->p);
-        LOG_DEBUG("setKdfParams: profile=%s, m=%u KiB, t=%u, p=%u",
-                  params->name, params->m_kib, params->t, params->p);
     } else {
         header_->setKdfProfile(EKDFProfile::None);
         header_->setKdfMKib(m_kib);
         header_->setKdfT(t);
         header_->setKdfP(p);
-        LOG_DEBUG("setKdfParams: custom, m=%u KiB, t=%u, p=%u", m_kib, t, p);
     }
 }
 
@@ -155,7 +160,7 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
 
 void FileManager::initCryptoForCreate() {
     crypto_->generateSalt(header_->getSaltData());
-    LOG_DEBUG("initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
+    LOG_INFO("Call FileManager::initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
               header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
     crypto_->deriveKek(password_, *header_);
     LOG_DEBUG("initCryptoForCreate: KEK derived, password length was %zu", password_.size());
@@ -178,9 +183,10 @@ void FileManager::initCryptoForCreate() {
 }
 
 void FileManager::validateKdfParamsAndDeriveKek() {
+    LOG_INFO("Call FileManager::validateKdfParamsAndDeriveKek()");
     uint32_t mKib = header_->getKdfMKib();
-    uint32_t t     = header_->getKdfT();
-    uint32_t p     = header_->getKdfP();
+    uint32_t t = header_->getKdfT();
+    uint32_t p = header_->getKdfP();
     if (mKib < KDF_M_KIB_MIN || mKib > KDF_M_KIB_MAX ||
         t < KDF_T_MIN || t > KDF_T_MAX ||
         p < KDF_P_MIN || p > KDF_P_MAX) {
@@ -201,12 +207,11 @@ void FileManager::validateKdfParamsAndDeriveKek() {
 }
 
 void FileManager::unwrapDekFromHeader() {
-    crypto_->unwrapDek(header_->getDekNonce(),
-                       header_->getEncryptedDek(),
-                       header_->getDekAuthTag());
+    crypto_->unwrapDek(header_->getDekNonce(), header_->getEncryptedDek(), header_->getDekAuthTag());
 }
 
 void FileManager::computeAndStoreHeaderHmac() {
+    LOG_INFO("Call FileManager::computeAndStoreHeaderHmac()");
     // we want to be sure that buffer is updated with new stored data
     header_->serialize();
 
@@ -217,6 +222,7 @@ void FileManager::computeAndStoreHeaderHmac() {
 }
 
 void FileManager::verifyHeaderHmac() {
+    LOG_INFO("Call FileManager::verifyHeaderHmac()");
     BenchMeasurerGuard bench("FileManager::verifyHeaderHmac");
     auto protectedBytes = header_->hmacProtectedBytes();
     auto expectedHmac   = crypto_->computeHmac(protectedBytes.data(), protectedBytes.size());
@@ -244,6 +250,7 @@ uint64_t FileManager::computeAvailableDataCapacity() const {
 }
 
 uint64_t FileManager::computeRequiredDataBytes() const {
+    LOG_INFO("Call FileManager::computeRequiredDataBytes()");
     auto encryptedSizeCalc = [this](uint64_t plain) -> uint64_t {
         uint64_t blockSize = header_->getChunkSize();
         uint64_t fullChunks = plain / blockSize;
@@ -269,7 +276,7 @@ uint64_t FileManager::computeRequiredDataBytes() const {
         required += enc;
     }
 
-    LOG_DEBUG("computeRequiredDataBytes: %zu file(s), total required=%llu",
+    LOG_DEBUG("FileManager::computeRequiredDataBytes: %zu file(s), total required=%llu",
               filesList_.size(), required);
     return required;
 }
@@ -282,7 +289,7 @@ void FileManager::createContainerFile() {
     uint32_t maxTableSize = header_->getMaxTableSize();
 
     uint64_t minSize = 4ULL * (header_->getHeaderSize() + maxTableSize);
-    LOG_DEBUG("createContainerFile: size=%llu, min=%llu, max=%llu, max_table=%u, path='%s'",
+    LOG_INFO("Call FileManager:createContainerFile: size=%llu, min=%llu, max=%llu, max_table=%u, path='%s'",
               containerSize, minSize, MAX_CONTAINER_SIZE, maxTableSize, containerFilePath_.c_str());
     if (containerSize < minSize) {
         throw std::runtime_error("Container size " + std::to_string(containerSize) +
@@ -323,6 +330,7 @@ void FileManager::writeFileTableAt(uint64_t slotOffset, const std::vector<char>&
 }
 
 void FileManager::writeAllSlots() {
+    LOG_INFO("Call FileManager::writeAllSlots()");
     BenchMeasurerGuard bench("FileManager::writeAllSlots");
     for (size_t i = 0; i < SLOT_COUNT; ++i) {
         writeHeaderAt(slotOffsets_[i]);
@@ -331,6 +339,7 @@ void FileManager::writeAllSlots() {
 }
 
 void FileManager::writeFileTableToAllSlots() {
+    LOG_INFO("Call FileManager::writeFileTableToAllSlots()");
     BenchMeasurerGuard bench("FileManager::writeFileTableToAllSlots");
 
     std::string serialized = fileTable_.serialize();
@@ -360,6 +369,7 @@ void FileManager::writeFileTableToAllSlots() {
 // ---- public operations ----
 
 void FileManager::readMeta() {
+    LOG_INFO("Call FileManager::readMeta()");
     BenchMeasurerGuard bench("FileManager::readMeta TOTAL");
     // Crash resilience strategy (spec 4.6.3): try all 4 slots, first with
     // valid HMAC wins.  KEK is derived at most twice (once per distinct salt).
@@ -469,6 +479,7 @@ void FileManager::readMeta() {
 }
 
 void FileManager::extract(const std::string& pathToOutputFolder) {
+    LOG_INFO("Call FileManager::extract(): path='%s'", pathToOutputFolder.c_str());
     BenchMeasurerGuard bench("FileManager::extract TOTAL");
     std::vector<FileEntry> entries;
     if (filesList_.empty()) {
@@ -494,7 +505,7 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
 }
 
 void FileManager::write() {
-    LOG_DEBUG("FileManager::write: enter");
+    LOG_INFO("Call FileManager::write()");
     BenchMeasurerGuard bench("FileManager::write TOTAL");
     if (filesList_.empty()) {
         throw std::runtime_error("No input files specified for create");
@@ -507,7 +518,7 @@ void FileManager::write() {
     uint64_t available = computeAvailableDataCapacity();
     uint64_t required  = computeRequiredDataBytes();
     if (required > available) {
-        throw std::runtime_error("Files too large for container: need " 
+        throw std::runtime_error("Files too large for container: need "
             + std::to_string(required) + " bytes of data capacity but container only provides "
             + std::to_string(available) + " bytes");
     }
@@ -522,6 +533,7 @@ void FileManager::write() {
 }
 
 void FileManager::add() {
+    LOG_INFO("Call FileManager::add()");
     BenchMeasurerGuard bench("FileManager::add TOTAL");
     // Resume from the persisted end-of-data position.
     uint64_t dataEnd = fileTable_.getNextWriteOffset();
@@ -632,4 +644,3 @@ void FileManager::readFilesTable() {
     LOG_DEBUG("readFilesTable: decrypted %zu bytes, %zu file(s) loaded",
               plainSize, fileTable_.getFilesTable().size());
 }
-

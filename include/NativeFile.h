@@ -21,7 +21,7 @@ public:
         OpenReadOnly     // Fail if not exist. Read-only, with sequential-scan hint.
     };
 
-    NativeFile() = default;
+    NativeFile();
     ~NativeFile();
 
     NativeFile(const NativeFile&) = delete;

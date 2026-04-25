@@ -9,7 +9,6 @@
 #include "botan/hex.h"
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
 #include <map>
 
@@ -20,12 +19,18 @@ DecryptPipeline::DecryptPipeline(CryptoManager& crypto, Config config)
     , readQueue_(config.queue_capacity)
     , writeQueue_(config.queue_capacity * 2)
 {
+    LOG_INFO("DecryptPipeline::DecryptPipeline()");
+}
+
+DecryptPipeline::~DecryptPipeline() {
+    LOG_INFO("DecryptPipeline::~DecryptPipeline()");
 }
 
 void DecryptPipeline::run(const std::vector<FileEntry>& entries, FragmentedIO& io,
     const std::string& outputDir, const std::atomic<bool>& cancelFlag,
     std::function<void(uint64_t, uint64_t)> progressCallback)
 {
+    LOG_INFO("Call DecryptPipeline::run(): entries.size=%zu", entries.size());
     uint64_t totalBytes = 0;
     for (const auto& e : entries) totalBytes += e.size;
 
@@ -149,6 +154,7 @@ void DecryptPipeline::workerTask() {
 void DecryptPipeline::writerLoop(const std::string& outputDir, const std::atomic<bool>& cancelFlag,
     std::function<void(uint64_t, uint64_t)> progressCallback, uint64_t totalBytes)
 {
+    LOG_INFO("Call DecryptPipeline::writerLoop(): totalBytes=%zu", totalBytes);
     BenchMeasurerGuard guard("DecryptPipeline::writerLoop");
     uint64_t nextExpected = 0;
     std::map<uint64_t, ProcessedChunk> reorderBuf;

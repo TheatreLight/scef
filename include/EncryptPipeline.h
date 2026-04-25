@@ -24,6 +24,7 @@ public:
     };
 
     EncryptPipeline(CryptoManager& crypto, Config config);
+    ~EncryptPipeline();
 
     void run(const std::vector<std::string>& files,
              FragmentedIO& io,

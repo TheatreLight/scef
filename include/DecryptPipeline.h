@@ -23,6 +23,7 @@ public:
     };
 
     DecryptPipeline(CryptoManager& crypto, Config config);
+    ~DecryptPipeline();
 
     void run(const std::vector<FileEntry>& entries,
              FragmentedIO& io,

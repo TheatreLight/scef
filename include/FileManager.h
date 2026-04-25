@@ -45,7 +45,7 @@ computeSlotOffsets(uint64_t containerOrFileSize, uint32_t headerSize) {
 class FileManager {
 public:
     FileManager();
-    ~FileManager() = default;
+    ~FileManager();
     FileManager(const FileManager&) = delete;
     FileManager& operator=(const FileManager&) = delete;
     FileManager(FileManager&&) = delete;

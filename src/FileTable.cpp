@@ -10,10 +10,18 @@
 #include <nlohmann/detail/conversions/to_json.hpp>
 #include <nlohmann/json_fwd.hpp>
 
-FileTable::FileTable() = default;
+FileTable::FileTable() {
+    LOG_INFO("FileTable::FileTable()");
+}
+
+FileTable::~FileTable() {
+    LOG_INFO("FileTable::~FileTable()");
+}
 
 void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checkSum,
-                             size_t offset, size_t actual_size) {
+    size_t offset, size_t actual_size)
+{
+    LOG_INFO("Call FileTable::addFileEntry()");
     FileEntry file;
     std::string fileName = std::filesystem::path(pathToFile).filename().string();
     while (std::any_of(filesTable_.begin(), filesTable_.end(),
@@ -30,7 +38,7 @@ void FileTable::addFileEntry(const std::string& pathToFile, const std::string& c
     file.checksum_sha256 = checkSum;
 
     filesTable_.push_back(file);
-    LOG_DEBUG("addFileEntry: '%s', size=%zu, chunks=%zu, offset=%zu, sha256=%.16s...",
+    LOG_DEBUG("FileTable::addFileEntry: '%s', size=%zu, chunks=%zu, offset=%zu, sha256=%.16s...",
               file.name.c_str(), file.size, file.chunks, file.offset,
               file.checksum_sha256.c_str());
 }
