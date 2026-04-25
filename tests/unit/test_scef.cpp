@@ -498,6 +498,50 @@ TEST_F(ContainerOpsTest, MultiBlockFileIntactAfterAdd) {
         << "Multi-block file corrupted after add().";
 }
 
+TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
+    const std::string password = "kuznechik_unit_password";
+    const std::vector<uint8_t> c1 = {0x10, 0x20, 0x30, 0x40, 0x50};
+    const std::vector<uint8_t> c2(257, 0x7A);
+    fs::path f1 = make_input("first.bin", c1);
+    fs::path f2 = make_input("second.bin", c2);
+
+    uint64_t container_size = 4 * 1024 * 1024;
+
+    {
+        FileManager fm;
+        fm.setCipher(ECipher::Kuznechik_GCM);
+        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
+                /*create_new=*/true, password);
+        fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
+        fm.write();
+    }
+    {
+        FileManager fm;
+        fm.init({f2.string()}, container_dir_.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+                /*create_new=*/false, password);
+        fm.add();
+    }
+    {
+        FileManager fm;
+        fm.init({"first.bin", "second.bin"}, container_dir_.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+                /*create_new=*/false, password);
+        fm.extract(output_dir_.string());
+    }
+
+    EXPECT_EQ(read_file(output_dir_ / "first.bin"), c1);
+    EXPECT_EQ(read_file(output_dir_ / "second.bin"), c2);
+
+    HeaderBuffer rawHeader{};
+    std::ifstream in(container_dir_ / CONTAINER_FILE_NAME, std::ios::binary);
+    ASSERT_TRUE(in.good());
+    in.read(reinterpret_cast<char*>(rawHeader.data()), static_cast<std::streamsize>(rawHeader.size()));
+    ASSERT_EQ(in.gcount(), static_cast<std::streamsize>(rawHeader.size()));
+
+    Header header;
+    header.read(rawHeader);
+    EXPECT_EQ(header.getCipher(), ECipher::Kuznechik_GCM);
+}
+
 // Spec 4.2.5: validate() should return true for a valid, freshly-created header.
 TEST_F(ContainerOpsTest, ValidateReturnsTrueForValidHeader) {
     Header h;

@@ -4,11 +4,14 @@
 
 #include "botan/pwdhash.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,6 +48,10 @@ void print_help() {
               << "  Note: --kdf-profile and --kdf-m/t/p are mutually exclusive.\n"
               << "        If nothing is specified, the 'default' profile is used.\n"
               << "\n"
+              << "Cipher options (create only):\n"
+              << "  --cipher <name>           aes, aes-256-gcm, kuznechik, kuznyechik, gost\n"
+              << "                            (default: aes)\n"
+              << "\n"
               << "  --help, -h    Show this help\n"
               << "  --version     Show version\n";
 }
@@ -69,10 +76,27 @@ std::string foundKey(const char* arg) {
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
-        s == "--log-level") {
+        s == "--cipher" || s == "--log-level") {
         return std::string(s);
     }
     return "";
+}
+
+std::string toLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+std::optional<ECipher> parseCipherName(const std::string& text) {
+    const std::string value = toLowerAscii(text);
+    if (value == "aes" || value == "aes-256-gcm") {
+        return ECipher::AES_256_GCM;
+    }
+    if (value == "kuznechik" || value == "kuznyechik" || value == "gost") {
+        return ECipher::Kuznechik_GCM;
+    }
+    return std::nullopt;
 }
 
 struct ParsedArgs {
@@ -86,6 +110,7 @@ struct ParsedArgs {
     uint32_t                 kdf_m_mib       = 0; // 0 = not specified
     uint32_t                 kdf_t           = 0; // 0 = not specified
     uint32_t                 kdf_p           = 0; // 0 = not specified
+    std::optional<ECipher>   cipher;
     std::string              log_level_name;
 };
 
@@ -120,6 +145,14 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
             out.kdf_t = static_cast<uint32_t>(std::stoul(argv[i]));
         } else if (key == "--kdf-p") {
             out.kdf_p = static_cast<uint32_t>(std::stoul(argv[i]));
+        } else if (key == "--cipher") {
+            auto parsed = parseCipherName(argv[i]);
+            if (!parsed) {
+                std::cerr << "Unknown cipher '" << argv[i]
+                          << "'. Valid values: aes, aes-256-gcm, kuznechik, kuznyechik, gost\n";
+                return EXIT_FAILURE;
+            }
+            out.cipher = *parsed;
         } else if (key == "--log-level") {
             out.log_level_name = argv[i];
         }
@@ -382,6 +415,7 @@ int main(int argc, char* argv[]) {
             "-c <container dir path> "
             "-f <file list> "
             "-s <size bytes> "
+            "[--cipher <aes|kuznechik>] "
             "[--kdf-profile <name> | --kdf-m <MiB> --kdf-t <n> --kdf-p <n>]\n";
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
@@ -408,6 +442,7 @@ int main(int argc, char* argv[]) {
 
         try {
             const std::string password = read_password();
+            fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
             fileManager.init(args.fileList, args.containerPath, args.container_size,
                              args.max_table_size, /*create_new=*/true, password);
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);

@@ -2,6 +2,7 @@
 #include "FileManager.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
+#include "enums/ECiphers.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -56,7 +57,8 @@ QString ScefController::createContainer(const QString& destDir,
                                          int kdfProfileIndex,
                                          int kdfM_MiB,
                                          int kdfT,
-                                         int kdfP)
+                                         int kdfP,
+                                         int cipherIndex)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
@@ -76,11 +78,21 @@ QString ScefController::createContainer(const QString& destDir,
         default: profile = EKDFProfile::Standard; break;
     }
 
+    // Map cipher index (0 = AES-256-GCM, 1 = Kuznechik-GCM) to ECipher.
+    ECipher cipher;
+    switch (cipherIndex) {
+        case 0:  cipher = ECipher::AES_256_GCM;   break;
+        case 1:  cipher = ECipher::Kuznechik_GCM; break;
+        default: cipher = ECipher::AES_256_GCM;   break;
+    }
+
     // Pre-validate synchronously (init checks size before creating file)
     try {
         fileManager_ = std::make_unique<FileManager>();
         fileManager_->init(paths, dir, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
                            /*create_new=*/true, pwd);
+
+        fileManager_->setCipher(cipher);
 
         if (profile != EKDFProfile::None) {
             const KdfProfileParams* p = getProfileParams(profile);

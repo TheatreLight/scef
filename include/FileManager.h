@@ -63,6 +63,7 @@ public:
     //   profile != None  → look up params from the profile table (m_kib/t/p are ignored).
     //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
     void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
+    void setCipher(ECipher c);
 
     void readMeta();
     void extract(const std::string& pathToOutputFolder);
@@ -181,6 +182,7 @@ private:
 
     uint64_t container_size_param_ = 0;   // size requested at init()
     uint64_t activeSlotOffset_   = 0;   // byte offset of the slot used by readMeta()
+    ECipher desiredCipher_ = ECipher::AES_256_GCM;
 };
 
 #endif // FILE_MANAGER_H

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 Header::Header()
 : container_size_(DEFAULT_CONTAINER_SIZE)
@@ -31,6 +32,13 @@ void Header::read(const HeaderBuffer& buf) {
     read_le32(buf.data() + POSITION_HEADER_SIZE, header_size_);
     // | 0x000C | 1 | cipher_id | uint8 |
     cipher_ = static_cast<ECipher>(buf[POSITION_CIPHER_ID]);
+    if (cipher_ != ECipher::AES_256_GCM && cipher_ != ECipher::Kuznechik_GCM) {
+        std::ostringstream ss;
+        ss << "Header: unknown cipher_id 0x"
+           << std::hex << std::setfill('0') << std::setw(2)
+           << static_cast<int>(buf[POSITION_CIPHER_ID]);
+        throw std::runtime_error(ss.str());
+    }
     // | 0x000D | 1 | kdf_id | uint8 |
     kdf_ = static_cast<EKDF>(buf[POSITION_KDF_ID]);
     // | 0x000E | 2 | kdf_profile_id | uint16_le |

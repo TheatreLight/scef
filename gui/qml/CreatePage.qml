@@ -36,8 +36,15 @@ Page {
         id: fileListModelLocal
     }
 
-    ColumnLayout {
+    ScrollView {
+        id: createScroll
         anchors.fill: parent
+        clip: true
+        contentWidth: availableWidth
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+    ColumnLayout {
+        width: createScroll.availableWidth
         spacing: 16
 
         Label {
@@ -59,7 +66,8 @@ Page {
         // Files to encrypt
         RowLayout {
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.preferredHeight: 180
+            Layout.minimumHeight: 120
             spacing: 8
 
             Rectangle {
@@ -242,6 +250,29 @@ Page {
                           : "Custom Argon2id parameters"
                 }
 
+                Label { text: "Cipher:" }
+                ComboBox {
+                    id: cipherCombo
+                    Layout.fillWidth: true
+                    model: ["AES-256-GCM (recommended)", "Kuznechik-GCM (GOST 34.12-2015)"]
+                    currentIndex: 0
+                }
+                Item { Layout.preferredWidth: 18 }
+
+                // Cipher description — spans all 3 columns
+                Item {}
+                Label {
+                    id: cipherDescLabel
+                    Layout.fillWidth: true
+                    Layout.columnSpan: 2
+                    font.pixelSize: 11
+                    opacity: 0.6
+                    wrapMode: Text.WordWrap
+                    text: cipherCombo.currentIndex === 0
+                          ? "AES-256-GCM: hardware-accelerated, browser-readable."
+                          : "Kuznechik-GCM: GOST 34.12-2015 (Russian standard). Native CLI/GUI only — not browser-readable."
+                }
+
                 // Advanced toggle — spans all 3 columns
                 Item {}
                 Label {
@@ -359,7 +390,8 @@ Page {
                         kdfProfileCombo.currentIndex,
                         kdfMemSpin.value,
                         kdfIterSpin.value,
-                        kdfParallelSpin.value
+                        kdfParallelSpin.value,
+                        cipherCombo.currentIndex
                     )
 
                     // Synchronous error (e.g. size validation)
@@ -389,7 +421,8 @@ Page {
                 color: "orange"
             }
         }
-    }
+    } // ColumnLayout
+    } // ScrollView
 
     // Busy overlay
     Rectangle {
