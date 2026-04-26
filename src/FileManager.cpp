@@ -156,10 +156,17 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
     }
 }
 
+void FileManager::setCipher(ECipher c) {
+    LOG_INFO("Call FileManager::setCipher(): cipher_id=0x%02x", static_cast<unsigned>(c));
+    desiredCipher_ = c;
+}
+
 // ---- crypto helpers ----
 
 void FileManager::initCryptoForCreate() {
     crypto_->generateSalt(header_->getSaltData());
+    header_->setCipher(desiredCipher_);
+    crypto_->setCipher(desiredCipher_);
     LOG_INFO("Call FileManager::initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
               header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
     crypto_->deriveKek(password_, *header_);
@@ -383,6 +390,12 @@ void FileManager::readMeta() {
         } catch (...) {
             return false;
         }
+        if (hdrBuf[0] != static_cast<uint8_t>(HEADER_MAGIC[0]) ||
+            hdrBuf[1] != static_cast<uint8_t>(HEADER_MAGIC[1]) ||
+            hdrBuf[2] != static_cast<uint8_t>(HEADER_MAGIC[2]) ||
+            hdrBuf[3] != static_cast<uint8_t>(HEADER_MAGIC[3])) {
+            return false;
+        }
         header_->read(hdrBuf);
         return header_->validate();
     };
@@ -418,6 +431,7 @@ void FileManager::readMeta() {
         }
 
         slotsWithValidMagic++;
+        crypto_->setCipher(header_->getCipher());
         LOG_DEBUG("readMeta: slot %zu at offset %llu — valid magic, m=%u KiB, t=%u, p=%u",
                   i, slotOff, header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
 

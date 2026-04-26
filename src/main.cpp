@@ -8,11 +8,11 @@
 
 #include <array>
 #include <chrono>
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -58,6 +58,10 @@ void print_help() {
               << "  Note: --kdf-profile and --kdf-m/t/p are mutually exclusive.\n"
               << "        If nothing is specified, the 'default' profile is used.\n"
               << "\n"
+              << "Cipher options (create only):\n"
+              << "  --cipher <name>           aes, aes-256-gcm, kuznechik, kuznyechik, gost\n"
+              << "                            (default: aes)\n"
+              << "\n"
               << "  --help, -h    Show this help\n"
               << "  --version     Show version\n";
 }
@@ -82,11 +86,28 @@ std::string foundKey(const char* arg) {
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
-        s == "--kdf-m-cost" || s == "--kdf-t-cost" || s == "--kdf-parallelism" ||
-        s == "--log-level" || s == "-y" || s == "--yes" || s == "--strength-only") {
+        s == "--cipher" || s == "--log-level" || s == "-y" || 
+        s == "--strength-only") {
         return std::string(s);
     }
     return "";
+}
+
+std::string toLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+std::optional<ECipher> parseCipherName(const std::string& text) {
+    const std::string value = toLowerAscii(text);
+    if (value == "aes" || value == "aes-256-gcm") {
+        return ECipher::AES_256_GCM;
+    }
+    if (value == "kuznechik" || value == "kuznyechik" || value == "gost") {
+        return ECipher::Kuznechik_GCM;
+    }
+    return std::nullopt;
 }
 
 struct ParsedArgs {
@@ -100,6 +121,7 @@ struct ParsedArgs {
     uint32_t                 kdf_m_mib       = 0; // 0 = not specified
     uint32_t                 kdf_t           = 0; // 0 = not specified
     uint32_t                 kdf_p           = 0; // 0 = not specified
+    std::optional<ECipher>   cipher;
     std::string              log_level_name;
     bool                     assumeYes       = false;
     bool                     strengthOnly    = false;
@@ -135,7 +157,7 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
     std::string key;
     for (int i = 2; i < argc; ++i) {
         if (const std::string arg = foundKey(argv[i]); !arg.empty()) {
-            if (arg == "-y" || arg == "--yes") {
+            if (arg == "-y") {
                 out.assumeYes = true;
                 key.clear();
                 continue;
@@ -160,12 +182,20 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
             out.max_table_size = static_cast<uint32_t>(std::stoul(argv[i]));
         } else if (key == "--kdf-profile") {
             out.kdf_profile_name = argv[i];
-        } else if (key == "--kdf-m" || key == "--kdf-m-cost") {
+        } else if (key == "--kdf-m") {
             out.kdf_m_mib = static_cast<uint32_t>(std::stoul(argv[i]));
-        } else if (key == "--kdf-t" || key == "--kdf-t-cost") {
+        } else if (key == "--kdf-t") {
             out.kdf_t = static_cast<uint32_t>(std::stoul(argv[i]));
-        } else if (key == "--kdf-p" || key == "--kdf-parallelism") {
+        } else if (key == "--kdf-p") {
             out.kdf_p = static_cast<uint32_t>(std::stoul(argv[i]));
+        } else if (key == "--cipher") {
+            auto parsed = parseCipherName(argv[i]);
+            if (!parsed) {
+                std::cerr << "Unknown cipher '" << argv[i]
+                          << "'. Valid values: aes, aes-256-gcm, kuznechik, kuznyechik, gost\n";
+                return EXIT_FAILURE;
+            }
+            out.cipher = *parsed;
         } else if (key == "--log-level") {
             out.log_level_name = argv[i];
         }
@@ -522,6 +552,7 @@ int main(int argc, char* argv[]) {
             "-c <container dir path> "
             "-f <file list> "
             "-s <size bytes> "
+            "[--cipher <aes|kuznechik>] "
             "[--kdf-profile <name> | --kdf-m <MiB> --kdf-t <n> --kdf-p <n>]\n";
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
@@ -561,6 +592,7 @@ int main(int argc, char* argv[]) {
             }
             fileManager.init(args.fileList, args.containerPath, args.container_size,
                              args.max_table_size, /*create_new=*/true, password);
+            fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
             fileManager.write();
         } catch (const std::exception& e) {

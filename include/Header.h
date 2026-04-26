@@ -123,6 +123,8 @@ public:
     void setContainerSize(uint64_t size);
     void increaseFileCount();
     void incrementHeaderVersion();
+    ECipher getCipher() const noexcept { return cipher_; }
+    void setCipher(ECipher c) noexcept { cipher_ = c; }
 
     // KDF parameter setters — call before initCryptoForCreate() on new containers.
     void setKdfProfile(EKDFProfile profile);

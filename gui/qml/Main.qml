@@ -4,8 +4,10 @@ import QtQuick.Controls.Material
 
 Window {
     id: window
-    width: 900
-    height: 600
+    width: 960
+    height: 900
+    minimumWidth: 720
+    minimumHeight: 600
     visible: true
     title: "SCEF - Encrypted Container Manager"
 

@@ -152,7 +152,7 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files, const st
 void EncryptPipeline::workerTask() {
     BenchMeasurerGuard guard("EncryptPipeline::workerTask");
     CryptoContext ctx = CryptoContext::makeEncryptor(
-        crypto_.getDek(), crypto_.getDekSize());
+        crypto_.getDek(), crypto_.getDekSize(), crypto_.getCipherAlgo());
 
     while (std::optional<ProcessedChunk> maybeTask = readQueue_.pop()) {
         auto& chunk = *maybeTask;

@@ -27,6 +27,21 @@ CryptoManager::~CryptoManager() {
     Botan::secure_scrub_memory(dek_.data(), DEK_SIZE);
 }
 
+void CryptoManager::setCipher(ECipher c) {
+    switch (c) {
+        case ECipher::AES_256_GCM:
+            cipherAlgo_ = "AES-256/GCM";
+            break;
+        case ECipher::Kuznechik_GCM:
+            cipherAlgo_ = "Kuznyechik/GCM";
+            break;
+        default:
+            throw std::invalid_argument("CryptoManager::setCipher: unknown cipher id");
+    }
+    LOG_INFO("Call CryptoManager::setCipher(): cipher_id=0x%02x, algo=%s",
+             static_cast<unsigned>(c), cipherAlgo_.c_str());
+}
+
 void CryptoManager::deriveKek(const std::string& password, Header& header) {
     LOG_INFO("Call CryptoManager::deriveKek()");
     BenchMeasurerGuard bench("CryptoManager::deriveKek");
@@ -60,10 +75,10 @@ void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<u
 
     rng.randomize(dek_nonce_out.data(), dek_nonce_out.size());
 
-    // Encrypt the random DEK with AES-256-GCM using the KEK.
-    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Encryption);
+    // Encrypt the random DEK with the selected AEAD using the KEK.
+    auto cipher = Botan::AEAD_Mode::create(cipherAlgo_, Botan::Cipher_Dir::Encryption);
     if (!cipher) {
-        throw std::runtime_error("AES-256/GCM not available");
+        throw std::runtime_error(cipherAlgo_ + " not available");
     }
     cipher->set_key(kek_.data(), KEK_SIZE);
     cipher->set_associated_data(std::span<const uint8_t>{}); // no additional data
@@ -75,7 +90,7 @@ void CryptoManager::wrapDek(std::array<uint8_t, 12>& dek_nonce_out, std::array<u
 
     // buf now holds: 32 bytes ciphertext + 16 bytes tag (total 48 bytes).
     if (buf.size() != DEK_SIZE + 16) {
-        throw std::runtime_error("Unexpected AES-GCM output size for DEK wrap");
+        throw std::runtime_error("Unexpected GCM output size for DEK wrap");
     }
     std::copy(buf.begin(), buf.begin() + DEK_SIZE, encrypted_dek_out.begin());
     std::copy(buf.begin() + DEK_SIZE, buf.end(), dek_auth_tag_out.begin());
@@ -92,9 +107,9 @@ void CryptoManager::unwrapDek(const std::array<uint8_t, 12>& dek_nonce, const st
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }
 
-    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Decryption);
+    auto cipher = Botan::AEAD_Mode::create(cipherAlgo_, Botan::Cipher_Dir::Decryption);
     if (!cipher) {
-        throw std::runtime_error("AES-256/GCM not available");
+        throw std::runtime_error(cipherAlgo_ + " not available");
     }
     cipher->set_key(kek_.data(), KEK_SIZE);
     cipher->set_associated_data(std::span<const uint8_t>{});
@@ -152,10 +167,10 @@ void CryptoManager::encrypt(const char* data, char* output, size_t dataSize) {
     std::memcpy(output, nonce.data(), NONCE_SIZE);
     output += NONCE_SIZE;
 
-    // Encrypt with AES-256-GCM.
-    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Encryption);
+    // Encrypt with the selected AEAD.
+    auto cipher = Botan::AEAD_Mode::create(cipherAlgo_, Botan::Cipher_Dir::Encryption);
     if (!cipher) {
-        throw std::runtime_error("AES-256/GCM not available");
+        throw std::runtime_error(cipherAlgo_ + " not available");
     }
     cipher->set_key(dek_.data(), DEK_SIZE);
     cipher->set_associated_data(std::span<const uint8_t>{});
@@ -191,9 +206,9 @@ void CryptoManager::decrypt(const char* data, char* output, size_t dataSize) {
     Botan::secure_vector<uint8_t> buf(reinterpret_cast<const uint8_t*>(data),
                                        reinterpret_cast<const uint8_t*>(data) + enc_size);
 
-    auto cipher = Botan::AEAD_Mode::create("AES-256/GCM", Botan::Cipher_Dir::Decryption);
+    auto cipher = Botan::AEAD_Mode::create(cipherAlgo_, Botan::Cipher_Dir::Decryption);
     if (!cipher) {
-        throw std::runtime_error("AES-256/GCM not available");
+        throw std::runtime_error(cipherAlgo_ + " not available");
     }
     cipher->set_key(dek_.data(), DEK_SIZE);
     cipher->set_associated_data(std::span<const uint8_t>{});

@@ -37,7 +37,8 @@ public:
                                          int kdfProfileIndex = 0,
                                          int kdfM_MiB = 64,
                                          int kdfT = 3,
-                                         int kdfP = 4);
+                                         int kdfP = 4,
+                                         int cipherIndex = 0);
 
     Q_INVOKABLE QVariantMap estimatePasswordStrength(const QString& password,
                                                       int kdfProfileIndex) const;

@@ -1,6 +1,8 @@
 #ifndef CRYPTO_MANAGER_H
 #define CRYPTO_MANAGER_H
 
+#include "enums/ECiphers.h"
+
 #include <array>
 #include <cstdint>
 #include <string>
@@ -65,6 +67,8 @@ public:
     const uint8_t* getDek() const { return dek_.data(); }
     size_t getDekSize() const { return DEK_SIZE; }
     bool isDekReady() const { return dek_ready_; }
+    void setCipher(ECipher c);
+    const std::string& getCipherAlgo() const noexcept { return cipherAlgo_; }
 
 private:
     // Derived key-encryption key (32 bytes). Zeroed on destruction.
@@ -74,6 +78,7 @@ private:
 
     bool kek_ready_ = false;
     bool dek_ready_ = false;
+    std::string cipherAlgo_ = "AES-256/GCM";
 };
 
 #endif // CRYPTO_MANAGER_H
