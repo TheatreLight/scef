@@ -11,6 +11,7 @@
 #include <QPointer>
 #include <QStringList>
 #include <QUrl>
+#include <QVariantMap>
 
 #include <botan/mem_ops.h>
 
@@ -33,6 +34,18 @@ std::vector<std::string> toStdPaths(const QStringList& list)
     for (const auto& item : list)
         result.push_back(toLocalPath(item));
     return result;
+}
+
+EKDFProfile profileFromIndex(int kdfProfileIndex)
+{
+    switch (kdfProfileIndex) {
+        case 0:  return EKDFProfile::Standard;
+        case 1:  return EKDFProfile::Fast;
+        case 2:  return EKDFProfile::High;
+        case 3:  return EKDFProfile::Browser;
+        case 4:  return EKDFProfile::None;
+        default: return EKDFProfile::Standard;
+    }
 }
 
 } // namespace
@@ -66,15 +79,7 @@ QString ScefController::createContainer(const QString& destDir,
     uint64_t sizeBytes = sizeMB * 1024ULL * 1024ULL;
 
     // Map profile index (0–3 = named profiles, 4 = custom) to EKDFProfile.
-    EKDFProfile profile;
-    switch (kdfProfileIndex) {
-        case 0:  profile = EKDFProfile::Standard; break;
-        case 1:  profile = EKDFProfile::Fast;     break;
-        case 2:  profile = EKDFProfile::High;     break;
-        case 3:  profile = EKDFProfile::Browser;  break;
-        case 4:  profile = EKDFProfile::None;     break;
-        default: profile = EKDFProfile::Standard; break;
-    }
+    EKDFProfile profile = profileFromIndex(kdfProfileIndex);
 
     // Pre-validate synchronously (init checks size before creating file)
     try {
@@ -111,6 +116,26 @@ QString ScefController::createContainer(const QString& destDir,
         });
 
     return {};
+}
+
+QVariantMap ScefController::estimatePasswordStrength(const QString& password,
+                                                      int kdfProfileIndex) const
+{
+    auto pwd = password.toStdString();
+    PasswordStrengthEstimator estimator;
+    const auto result = estimator.estimate(pwd, profileFromIndex(kdfProfileIndex));
+
+    Botan::secure_scrub_memory(pwd.data(), pwd.size());
+    pwd.clear();
+
+    QVariantMap map;
+    map.insert(QStringLiteral("score"), result.score);
+    map.insert(QStringLiteral("bits"), result.bits);
+    map.insert(QStringLiteral("recommendedMin"), result.recommendedMin);
+    map.insert(QStringLiteral("meetsRecommendation"), result.meetsRecommendation);
+    map.insert(QStringLiteral("warning"), QString::fromStdString(result.warning));
+    map.insert(QStringLiteral("crackTimeOffline"), QString::fromStdString(result.crackTimeOffline));
+    return map;
 }
 
 QString ScefController::openContainer(const QString& containerPath,

@@ -10,6 +10,40 @@ Page {
     property bool sizeError: false
     property string initialDestDir: ""
 
+    function collectFiles() {
+        var files = []
+        for (var i = 0; i < fileListModelLocal.count; i++) {
+            files.push(fileListModelLocal.get(i).filePath)
+        }
+        return files
+    }
+
+    function showCreateError(error) {
+        if (error !== "") {
+            errorLabel.text = error
+            errorLabel.visible = true
+            if (error.indexOf("too large") !== -1) {
+                sizeError = true
+                sizeSpin.forceActiveFocus()
+            }
+        }
+    }
+
+    function performCreate() {
+        var error = controller.createContainer(
+            initialDestDir,
+            collectFiles(),
+            passwordField.text,
+            sizeSpin.value,
+            kdfProfileCombo.currentIndex,
+            kdfMemSpin.value,
+            kdfIterSpin.value,
+            kdfParallelSpin.value
+        )
+
+        showCreateError(error)
+    }
+
     // KDF profile definitions: [label, description, m_mib, t, p]
     // Index corresponds to kdfProfileIndex passed to controller (0=Standard, 1=Fast, 2=High, 3=Browser, 4=Custom)
     readonly property var kdfProfiles: [
@@ -30,6 +64,23 @@ Page {
                 fileListModelLocal.append({"filePath": path})
             }
         }
+    }
+
+    Dialog {
+        id: weakPasswordDialog
+        title: "Weak password"
+        modal: true
+        standardButtons: Dialog.Yes | Dialog.No
+        property string warningText: ""
+
+        Label {
+            text: weakPasswordDialog.warningText
+            wrapMode: Text.WordWrap
+            width: Math.min(420, createPageRoot.width - 80)
+        }
+
+        onAccepted: performCreate()
+        onRejected: {}
     }
 
     ListModel {
@@ -346,32 +397,17 @@ Page {
                 onClicked: {
                     errorLabel.visible = false
                     sizeError = false
-                    var files = []
-                    for (var i = 0; i < fileListModelLocal.count; i++) {
-                        files.push(fileListModelLocal.get(i).filePath)
-                    }
 
-                    var error = controller.createContainer(
-                        initialDestDir,
-                        files,
+                    var strength = controller.estimatePasswordStrength(
                         passwordField.text,
-                        sizeSpin.value,
-                        kdfProfileCombo.currentIndex,
-                        kdfMemSpin.value,
-                        kdfIterSpin.value,
-                        kdfParallelSpin.value
+                        kdfProfileCombo.currentIndex
                     )
-
-                    // Synchronous error (e.g. size validation)
-                    if (error !== "") {
-                        errorLabel.text = error
-                        errorLabel.visible = true
-                        if (error.indexOf("too large") !== -1) {
-                            sizeError = true
-                            sizeSpin.forceActiveFocus()
-                        }
+                    if (strength.meetsRecommendation === true) {
+                        performCreate()
+                    } else {
+                        weakPasswordDialog.warningText = strength.warning + "\n\nUse this password anyway?"
+                        weakPasswordDialog.open()
                     }
-                    // else: async operation started, wait for operationFinished
                 }
             }
 

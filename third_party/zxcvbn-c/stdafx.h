@@ -1,0 +1,1 @@
+/* Compatibility shim for upstream zxcvbn.c on Windows builds without PCH. */
