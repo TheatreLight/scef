@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <QThread>
+#include <QVariantMap>
 
 #include <functional>
 #include <memory>
@@ -12,6 +13,7 @@
 
 #include "DriveListModel.h"
 #include "FileListModel.h"
+#include "PasswordStrengthEstimator.h"
 
 class FileManager;
 
@@ -37,6 +39,9 @@ public:
                                          int kdfT = 3,
                                          int kdfP = 4,
                                          int cipherIndex = 0);
+
+    Q_INVOKABLE QVariantMap estimatePasswordStrength(const QString& password,
+                                                      int kdfProfileIndex) const;
 
     Q_INVOKABLE QString openContainer(const QString& containerPath,
                                        const QString& password);

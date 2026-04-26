@@ -1,12 +1,13 @@
 #include "FileManager.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
+#include "PasswordStrengthEstimator.h"
 
+#include "botan/mem_ops.h"
 #include "botan/pwdhash.h"
 
-#include <algorithm>
+#include <array>
 #include <chrono>
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
@@ -15,6 +16,12 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -38,6 +45,8 @@ void print_help() {
               << "  --max_table_size <bytes>  Max encrypted file table size per slot\n"
               << "                            (default: " << DEFAULT_MAX_TABLE_SIZE << " bytes)\n"
               << "  --log-level <level>       debug, info, bench, warning, error\n"
+              << "  -y, --yes                 Assume yes for confirmation prompts\n"
+              << "  --strength-only           Read password from stdin, print score/bits, exit\n"
               << "\n"
               << "KDF options (create only):\n"
               << "  --kdf-profile <name>      Use a predefined KDF profile.\n"
@@ -45,6 +54,7 @@ void print_help() {
               << "  --kdf-m <MiB>             Manual Argon2id memory in MiB (min 1, max 4096; <8 warns)\n"
               << "  --kdf-t <n>               Manual Argon2id iterations (min 1, max 100)\n"
               << "  --kdf-p <n>               Manual Argon2id parallelism (min 1, max 64)\n"
+              << "                            Aliases: --kdf-m-cost, --kdf-t-cost, --kdf-parallelism\n"
               << "  Note: --kdf-profile and --kdf-m/t/p are mutually exclusive.\n"
               << "        If nothing is specified, the 'default' profile is used.\n"
               << "\n"
@@ -76,7 +86,8 @@ std::string foundKey(const char* arg) {
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
-        s == "--cipher" || s == "--log-level") {
+        s == "--cipher" || s == "--log-level" || s == "-y" || 
+        s == "--strength-only") {
         return std::string(s);
     }
     return "";
@@ -112,7 +123,29 @@ struct ParsedArgs {
     uint32_t                 kdf_p           = 0; // 0 = not specified
     std::optional<ECipher>   cipher;
     std::string              log_level_name;
+    bool                     assumeYes       = false;
+    bool                     strengthOnly    = false;
 };
+
+struct PasswordScrubber {
+    std::string& s;
+
+    ~PasswordScrubber() {
+        if (!s.empty()) {
+            Botan::secure_scrub_memory(s.data(), s.size());
+            s.clear();
+        }
+    }
+};
+
+bool hasArg(int argc, char** argv, std::string_view needle) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view{argv[i]} == needle) {
+            return true;
+        }
+    }
+    return false;
+}
 
 int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsage,
               int argsRequired) {
@@ -124,6 +157,16 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
     std::string key;
     for (int i = 2; i < argc; ++i) {
         if (const std::string arg = foundKey(argv[i]); !arg.empty()) {
+            if (arg == "-y") {
+                out.assumeYes = true;
+                key.clear();
+                continue;
+            }
+            if (arg == "--strength-only") {
+                out.strengthOnly = true;
+                key.clear();
+                continue;
+            }
             key = arg;
             continue;
         }
@@ -207,6 +250,30 @@ int applyLogLevelFromArgv(int argc, char** argv) {
     return EXIT_SUCCESS;
 }
 
+bool stdinIsTty() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0;
+#endif
+}
+
+bool forceStrengthPrompt() {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t value_len = 0;
+    if (_dupenv_s(&value, &value_len, "SCEF_FORCE_PROMPT") != 0 || value == nullptr) {
+        return false;
+    }
+    const bool enabled = value_len > 1 && std::string_view{value} != "0";
+    std::free(value);
+    return enabled;
+#else
+    const char* value = std::getenv("SCEF_FORCE_PROMPT");
+    return value != nullptr && value[0] != '\0' && std::string_view{value} != "0";
+#endif
+}
+
 } // namespace
 
 // Resolve KDF parameters from parsed CLI args.
@@ -286,6 +353,73 @@ static void printKdfSelection(EKDFProfile profile, uint32_t m_kib, uint32_t t, u
               << " (m=" << (m_kib / 1024) << " MiB"
               << ", t=" << t
               << ", p=" << p << ")\n";
+}
+
+static int confirmWeakPassword(const PasswordStrengthEstimator::Result& result,
+                               bool assumeYes) {
+    std::cerr << result.warning << "\n";
+    if (assumeYes) {
+        return EXIT_SUCCESS;
+    }
+    if (!stdinIsTty() && !forceStrengthPrompt()) {
+        return EXIT_SUCCESS;
+    }
+
+    std::cerr << "Proceed with this password? [y/N]: ";
+    std::string answer;
+    std::getline(std::cin, answer);
+    if (answer.size() == 1 && (answer[0] == 'y' || answer[0] == 'Y')) {
+        return EXIT_SUCCESS;
+    }
+
+    std::cerr << "Aborted due to weak password.\n";
+    return EXIT_FAILURE;
+}
+
+static int resolveStrengthOnlyProfile(int argc, char** argv, EKDFProfile& out_profile) {
+    out_profile = EKDFProfile::Standard;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view{argv[i]} != "--kdf-profile") {
+            continue;
+        }
+        if (i + 1 >= argc) {
+            LOG_ERROR("--kdf-profile requires a value: fast, default, high, browser");
+            return EXIT_FAILURE;
+        }
+        const KdfProfileParams* p = getProfileByName(argv[i + 1]);
+        if (!p) {
+            LOG_ERROR("Unknown KDF profile '%s'. Valid names: fast, default, high, browser",
+                      argv[i + 1]);
+            return EXIT_FAILURE;
+        }
+        out_profile = p->id;
+        ++i;
+    }
+
+    return EXIT_SUCCESS;
+}
+
+static int cmd_strength_only(int argc, char** argv) {
+    EKDFProfile kdf_profile{};
+    if (EXIT_FAILURE == resolveStrengthOnlyProfile(argc, argv, kdf_profile)) {
+        return EXIT_FAILURE;
+    }
+
+    try {
+        std::string password = read_password();
+        PasswordScrubber scrub{password};
+        PasswordStrengthEstimator est;
+        const auto r = est.estimate(password, kdf_profile);
+        std::cout << "score=" << r.score
+                  << " bits=" << std::fixed << std::setprecision(1) << r.bits
+                  << "\n";
+    } catch (const std::exception& e) {
+        LOG_ERROR("strength-only failed: %s", e.what());
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }
 
 // Run Argon2id for one profile and return elapsed seconds.
@@ -394,6 +528,9 @@ int main(int argc, char* argv[]) {
 
     std::string_view cmd{argv[1]};
 
+    if (hasArg(argc, argv, "--strength-only")) {
+        return cmd_strength_only(argc, argv);
+    }
     if (cmd == "--help" || cmd == "-h") {
         print_help();
         return EXIT_SUCCESS;
@@ -420,6 +557,10 @@ int main(int argc, char* argv[]) {
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
         }
+        if (args.strengthOnly) {
+            LOG_ERROR("--strength-only is mutually exclusive with create");
+            return EXIT_FAILURE;
+        }
         if (args.containerPath.empty()) {
             LOG_ERROR("-c <container_dir> is required for create");
             return EXIT_FAILURE;
@@ -441,10 +582,17 @@ int main(int argc, char* argv[]) {
         printKdfSelection(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
 
         try {
-            const std::string password = read_password();
-            fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
+            std::string password = read_password();
+            PasswordScrubber scrub{password};
+            PasswordStrengthEstimator est;
+            const auto strength = est.estimate(password, kdf_profile);
+            if (!strength.meetsRecommendation &&
+                EXIT_FAILURE == confirmWeakPassword(strength, args.assumeYes)) {
+                return EXIT_FAILURE;
+            }
             fileManager.init(args.fileList, args.containerPath, args.container_size,
                              args.max_table_size, /*create_new=*/true, password);
+            fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
             fileManager.write();
         } catch (const std::exception& e) {
@@ -456,12 +604,17 @@ int main(int argc, char* argv[]) {
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
         }
+        if (args.strengthOnly) {
+            LOG_ERROR("--strength-only is mutually exclusive with add");
+            return EXIT_FAILURE;
+        }
         if (args.containerPath.empty()) {
             LOG_ERROR("-c <container_dir> is required for add");
             return EXIT_FAILURE;
         }
         try {
-            const std::string password = read_password();
+            std::string password = read_password();
+            PasswordScrubber scrub{password};
             fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.add();
@@ -474,12 +627,17 @@ int main(int argc, char* argv[]) {
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 4)) {
             return EXIT_FAILURE;
         }
+        if (args.strengthOnly) {
+            LOG_ERROR("--strength-only is mutually exclusive with list");
+            return EXIT_FAILURE;
+        }
         if (args.containerPath.empty()) {
             LOG_ERROR("-c <container_dir> is required for list");
             return EXIT_FAILURE;
         }
         try {
-            const std::string password = read_password();
+            std::string password = read_password();
+            PasswordScrubber scrub{password};
             fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.printFilesTable();
@@ -493,6 +651,10 @@ int main(int argc, char* argv[]) {
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
         }
+        if (args.strengthOnly) {
+            LOG_ERROR("--strength-only is mutually exclusive with extract");
+            return EXIT_FAILURE;
+        }
         if (args.containerPath.empty()) {
             LOG_ERROR("-c <container_dir> is required for extract");
             return EXIT_FAILURE;
@@ -502,7 +664,8 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         try {
-            const std::string password = read_password();
+            std::string password = read_password();
+            PasswordScrubber scrub{password};
             fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.extract(args.outputPath);
