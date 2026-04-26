@@ -3,6 +3,8 @@
 
 #include "enums/EKDFProfile.h"
 
+#include <botan/secmem.h>
+
 #include <string>
 
 class PasswordStrengthEstimator {
@@ -25,7 +27,7 @@ public:
     PasswordStrengthEstimator& operator=(PasswordStrengthEstimator&&) = delete;
 
     // Pure function: does NOT log the password; does NOT keep a copy after return.
-    Result estimate(const std::string& password, EKDFProfile profile) const;
+    Result estimate(const Botan::secure_vector<char>& password, EKDFProfile profile) const;
 
     // Single source of truth for the profile threshold table.
     static int recommendedMinScore(EKDFProfile profile) noexcept;

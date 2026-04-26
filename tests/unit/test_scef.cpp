@@ -10,10 +10,13 @@
 #include "Header.h"
 #include "FileManager.h"
 
+#include <botan/secmem.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -61,6 +64,10 @@ fs::path make_temp_dir(const std::string& suffix) {
     fs::remove_all(base);
     fs::create_directories(base);
     return base;
+}
+
+Botan::secure_vector<char> make_secure_vector(std::string_view text) {
+    return Botan::secure_vector<char>(text.begin(), text.end());
 }
 
 } // namespace
@@ -150,6 +157,16 @@ TEST_F(HeaderLayoutTest, Reserved0At0x0098_IsZero) {
             << "Spec requires reserved_0 (8 zero bytes) at offset 0x0098. "
                "Byte at 0x" << std::hex << i << " is non-zero.";
     }
+}
+
+TEST_F(HeaderLayoutTest, ReadAcceptsUnknownCipherIdByte) {
+    HeaderBuffer raw = header_.buffer();
+    raw[POSITION_CIPHER_ID] = 0xFF;
+
+    Header parsed;
+    EXPECT_NO_THROW(parsed.read(raw));
+    EXPECT_EQ(static_cast<uint8_t>(parsed.getCipher()), 0xFFu)
+        << "Header::read must store cipher_id as-is; cipher support is checked at use/write time.";
 }
 
 // Spec 4.2.4: file_table_offset was REMOVED from the spec.
@@ -499,7 +516,7 @@ TEST_F(ContainerOpsTest, MultiBlockFileIntactAfterAdd) {
 }
 
 TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
-    const std::string password = "kuznechik_unit_password";
+    const auto password = make_secure_vector("kuznechik_unit_password");
     const std::vector<uint8_t> c1 = {0x10, 0x20, 0x30, 0x40, 0x50};
     const std::vector<uint8_t> c2(257, 0x7A);
     fs::path f1 = make_input("first.bin", c1);
@@ -540,6 +557,38 @@ TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
     Header header;
     header.read(rawHeader);
     EXPECT_EQ(header.getCipher(), ECipher::Kuznechik_GCM);
+}
+
+TEST_F(ContainerOpsTest, CorruptCipherIdInSlot0FallsBackToSlot1) {
+    const auto password = make_secure_vector("slot_recovery_password");
+    const std::vector<uint8_t> content = {0x51, 0x52, 0x53, 0x54};
+    fs::path src = make_input("payload.bin", content);
+
+    uint64_t container_size = 4 * 1024 * 1024;
+
+    {
+        FileManager fm;
+        fm.setCipher(ECipher::Kuznechik_GCM);
+        fm.init({src.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
+                /*create_new=*/true, password);
+        fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
+        fm.write();
+    }
+
+    fs::path recovered_dir = tmp_dir_ / "recovered_container";
+    fs::create_directories(recovered_dir);
+    auto raw = read_file(container_dir_ / CONTAINER_FILE_NAME);
+    ASSERT_GT(raw.size(), POSITION_CIPHER_ID);
+    raw[POSITION_CIPHER_ID] = 0xFF;
+    write_file(recovered_dir / CONTAINER_FILE_NAME, raw);
+
+    {
+        FileManager fm;
+        ASSERT_NO_THROW(fm.init({}, recovered_dir.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+                                /*create_new=*/false, password));
+        EXPECT_EQ(fm.getCipher(), ECipher::Kuznechik_GCM)
+            << "Open must recover from slot 1 and keep the original cipher selection.";
+    }
 }
 
 // Spec 4.2.5: validate() should return true for a valid, freshly-created header.

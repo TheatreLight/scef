@@ -14,8 +14,10 @@
 #include <QUrl>
 #include <QVariantMap>
 
-#include <botan/mem_ops.h>
+#include <botan/secmem.h>
 
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -35,6 +37,12 @@ std::vector<std::string> toStdPaths(const QStringList& list)
     for (const auto& item : list)
         result.push_back(toLocalPath(item));
     return result;
+}
+
+Botan::secure_vector<char> securePasswordFromQString(const QString& password)
+{
+    const QByteArray utf8 = password.toUtf8();
+    return Botan::secure_vector<char>(utf8.constData(), utf8.constData() + utf8.size());
 }
 
 EKDFProfile profileFromIndex(int kdfProfileIndex)
@@ -58,10 +66,7 @@ ScefController::ScefController(QObject* parent)
 {
 }
 
-ScefController::~ScefController()
-{
-    scrubPassword();
-}
+ScefController::~ScefController() = default;
 
 QString ScefController::createContainer(const QString& destDir,
                                          const QStringList& files,
@@ -77,7 +82,7 @@ QString ScefController::createContainer(const QString& destDir,
 
     auto paths = toStdPaths(files);
     auto dir = toLocalPath(destDir);
-    auto pwd = password.toStdString();
+    auto pwd = securePasswordFromQString(password);
     uint64_t sizeBytes = sizeMB * 1024ULL * 1024ULL;
 
     // Map profile index (0–3 = named profiles, 4 = custom) to EKDFProfile.
@@ -118,9 +123,7 @@ QString ScefController::createContainer(const QString& destDir,
     auto dirQ = QString::fromStdString(dir);
     runAsync(std::move(fileManager_),
         [](FileManager* fm) { fm->write(); },
-        [this, dirQ, pwd = std::move(pwd)]() mutable {
-            scrubPassword();
-            currentPassword_ = std::move(pwd);
+        [this, dirQ]() {
             currentContainerDir_ = dirQ;
             containerOpen_ = true;
             emit containerOpenChanged();
@@ -133,12 +136,9 @@ QString ScefController::createContainer(const QString& destDir,
 QVariantMap ScefController::estimatePasswordStrength(const QString& password,
                                                       int kdfProfileIndex) const
 {
-    auto pwd = password.toStdString();
+    auto pwd = securePasswordFromQString(password);
     PasswordStrengthEstimator estimator;
     const auto result = estimator.estimate(pwd, profileFromIndex(kdfProfileIndex));
-
-    Botan::secure_scrub_memory(pwd.data(), pwd.size());
-    pwd.clear();
 
     QVariantMap map;
     map.insert(QStringLiteral("score"), result.score);
@@ -158,26 +158,17 @@ QString ScefController::openContainer(const QString& containerPath,
     auto filePath = toLocalPath(containerPath);
     QFileInfo fi(QString::fromStdString(filePath));
     auto dir = fi.absolutePath().toStdString();
-    auto pwd = password.toStdString();
+    auto pwd = securePasswordFromQString(password);
     auto dirQ = fi.absolutePath();
 
     auto fm = std::make_unique<FileManager>();
 
-    // Explicit copy for the worker lambda — C++ does not guarantee argument
-    // evaluation order, so capturing pwd by copy in one lambda and by move
-    // in another (both as function arguments) is undefined behavior.
-    auto pwdForWorker = pwd;
-
     runAsync(std::move(fm),
-        [dir, pwdForWorker = std::move(pwdForWorker)](FileManager* f) mutable {
+        [dir, pwd = std::move(pwd)](FileManager* f) mutable {
             f->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
-                    /*create_new=*/false, pwdForWorker);
-            Botan::secure_scrub_memory(pwdForWorker.data(), pwdForWorker.size());
-            pwdForWorker.clear();
+                    /*create_new=*/false, pwd);
         },
-        [this, dirQ, pwd = std::move(pwd)]() mutable {
-            scrubPassword();
-            currentPassword_ = std::move(pwd);
+        [this, dirQ]() {
             currentContainerDir_ = dirQ;
             containerOpen_ = true;
             emit containerOpenChanged();
@@ -237,7 +228,6 @@ void ScefController::closeContainer()
     if (busy_) return;
     fileManager_.reset();
     fileListModel_->clear();
-    scrubPassword();
     currentContainerDir_.clear();
     containerOpen_ = false;
     emit containerOpenChanged();
@@ -378,11 +368,4 @@ void ScefController::refreshFileList()
     }
 }
 
-void ScefController::scrubPassword()
-{
-    if (!currentPassword_.empty()) {
-        Botan::secure_scrub_memory(currentPassword_.data(), currentPassword_.size());
-        currentPassword_.clear();
-    }
-}
 

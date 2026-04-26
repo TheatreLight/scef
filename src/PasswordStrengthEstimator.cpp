@@ -86,10 +86,13 @@ PasswordStrengthEstimator::PasswordStrengthEstimator() = default;
 PasswordStrengthEstimator::~PasswordStrengthEstimator() = default;
 
 PasswordStrengthEstimator::Result
-PasswordStrengthEstimator::estimate(const std::string& password, EKDFProfile profile) const
+PasswordStrengthEstimator::estimate(const Botan::secure_vector<char>& password, EKDFProfile profile) const
 {
+    Botan::secure_vector<char> nulTerminated(password.begin(), password.end());
+    nulTerminated.push_back('\0');
+
     ZxcMatch_t* matches = nullptr;
-    const double bits = ZxcvbnMatch(password.c_str(), nullptr, &matches);
+    const double bits = ZxcvbnMatch(nulTerminated.data(), nullptr, &matches);
     ZxcvbnFreeInfo(matches);
 
     Result result{};

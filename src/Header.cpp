@@ -7,6 +7,29 @@
 #include <sstream>
 #include <stdexcept>
 
+namespace {
+
+std::string unsupported_cipher_message(const char* context, ECipher cipher) {
+    std::ostringstream ss;
+    ss << context << ": unsupported cipher_id 0x"
+       << std::hex << std::setfill('0') << std::setw(2)
+       << static_cast<unsigned>(cipher)
+       << " (expected 0x01 AES-256-GCM or 0x02 Kuznechik-GCM)";
+    return ss.str();
+}
+
+template<size_t N>
+std::string hex_dump(const std::array<uint8_t, N>& arr) {
+    std::ostringstream ss;
+    for (size_t i = 0; i < N; ++i) {
+        if (i > 0) ss << ' ';
+        ss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(arr[i]);
+    }
+    return ss.str();
+}
+
+} // namespace
+
 Header::Header()
 : container_size_(DEFAULT_CONTAINER_SIZE)
 {
@@ -25,30 +48,30 @@ void Header::read(const HeaderBuffer& buf) {
     // | 0x0000 | 4 | magic | uint32_le |
     std::copy(buf.begin(), buf.begin() + POSITION_VERSION_MAJOR, header_magic_.begin());
     // | 0x0004 | 2 | version_major | uint16_le |
-    read_le16(buf.data() + POSITION_VERSION_MAJOR, version_major_);
+    const uint8_t* p = buf.data() + POSITION_VERSION_MAJOR;
+    version_major_ = read_le<uint16_t>(p);
     // | 0x0006 | 2 | version_minor | uint16_le |
-    read_le16(buf.data() + POSITION_VERSION_MINOR, version_minor_);
+    p = buf.data() + POSITION_VERSION_MINOR;
+    version_minor_ = read_le<uint16_t>(p);
     // | 0x0008 | 4 | header_size | uint32_le |
-    read_le32(buf.data() + POSITION_HEADER_SIZE, header_size_);
+    p = buf.data() + POSITION_HEADER_SIZE;
+    header_size_ = read_le<uint32_t>(p);
     // | 0x000C | 1 | cipher_id | uint8 |
     cipher_ = static_cast<ECipher>(buf[POSITION_CIPHER_ID]);
-    if (cipher_ != ECipher::AES_256_GCM && cipher_ != ECipher::Kuznechik_GCM) {
-        std::ostringstream ss;
-        ss << "Header: unknown cipher_id 0x"
-           << std::hex << std::setfill('0') << std::setw(2)
-           << static_cast<int>(buf[POSITION_CIPHER_ID]);
-        throw std::runtime_error(ss.str());
-    }
     // | 0x000D | 1 | kdf_id | uint8 |
     kdf_ = static_cast<EKDF>(buf[POSITION_KDF_ID]);
     // | 0x000E | 2 | kdf_profile_id | uint16_le |
-    read_le16(buf.data() + POSITION_KDF_PROFILE_ID, reinterpret_cast<uint16_t&>(kdf_profile_));
+    p = buf.data() + POSITION_KDF_PROFILE_ID;
+    kdf_profile_ = static_cast<EKDFProfile>(read_le<uint16_t>(p));
     // | 0x0010 | 4 | kdf_m_kib | uint32_le |
-    read_le32(buf.data() + POSITION_KDF_M_KIB, kdf_m_kib_);
+    p = buf.data() + POSITION_KDF_M_KIB;
+    kdf_m_kib_ = read_le<uint32_t>(p);
     // | 0x0014 | 4 | kdf_t | uint32_le |
-    read_le32(buf.data() + POSITION_KDF_T, kdf_t_);
+    p = buf.data() + POSITION_KDF_T;
+    kdf_t_ = read_le<uint32_t>(p);
     // | 0x0018 | 4 | kdf_p | uint32_le |
-    read_le32(buf.data() + POSITION_KDF_P, kdf_p_);
+    p = buf.data() + POSITION_KDF_P;
+    kdf_p_ = read_le<uint32_t>(p);
     // | 0x001C | 32 | salt | uint8[32] |
     std::copy(buf.begin() + POSITION_SALT, buf.begin() + POSITION_DEK_NONCE, salt_.begin());
     // | 0x003C | 12 | dek_nonce | uint8[12] |
@@ -58,19 +81,26 @@ void Header::read(const HeaderBuffer& buf) {
     // | 0x0068 | 16 | dek_auth_tag | uint8[16] |
     std::copy(buf.begin() + POSITION_DEK_AUTH_TAG, buf.begin() + POSITION_CONTAINER_SIZE, dek_auth_tag_.begin());
     // | 0x0078 | 8 | container_size | uint64_le |
-    read_le64(buf.data() + POSITION_CONTAINER_SIZE, container_size_);
+    p = buf.data() + POSITION_CONTAINER_SIZE;
+    container_size_ = read_le<uint64_t>(p);
     // | 0x0080 | 4 | file_table_size | uint32_le |
-    read_le32(buf.data() + POSITION_FILE_TABLE_SIZE, file_table_size_);
+    p = buf.data() + POSITION_FILE_TABLE_SIZE;
+    file_table_size_ = read_le<uint32_t>(p);
     // | 0x0084 | 4 | max_table_size | uint32_le |
-    read_le32(buf.data() + POSITION_MAX_TABLE_SIZE, max_table_size_);
+    p = buf.data() + POSITION_MAX_TABLE_SIZE;
+    max_table_size_ = read_le<uint32_t>(p);
     // | 0x0088 | 4 | file_count | uint32_le |
-    read_le32(buf.data() + POSITION_FILE_COUNT, file_count_);
+    p = buf.data() + POSITION_FILE_COUNT;
+    file_count_ = read_le<uint32_t>(p);
     // | 0x008C | 4 | block_size | uint32_le |
-    read_le32(buf.data() + POSITION_BLOCK_SIZE, block_size_);
+    p = buf.data() + POSITION_BLOCK_SIZE;
+    block_size_ = read_le<uint32_t>(p);
     // | 0x0090 | 4 | header_version | uint32_le |
-    read_le32(buf.data() + POSITION_HEADER_VERSION, header_version_);
+    p = buf.data() + POSITION_HEADER_VERSION;
+    header_version_ = read_le<uint32_t>(p);
     // | 0x0094 | 4 | flags | uint32_le |
-    read_le32(buf.data() + POSITION_FLAGS, flags_);
+    p = buf.data() + POSITION_FLAGS;
+    flags_ = read_le<uint32_t>(p);
     // | 0x0098 | 8 | reserved_0 | uint8[8] |
     std::copy(buf.begin() + POSITION_RESERVED_0, buf.begin() + POSITION_HEADER_HMAC, reserved_0_.begin());
     // | 0x00A0 | 32 | header_hmac | uint8[32] |
@@ -122,6 +152,10 @@ void Header::setDekAuthTag(const std::array<uint8_t, AUTH_TAG_SIZE>& tag) {
 }
 
 void Header::createBuffer() {
+    if (!isSupportedCipher(cipher_)) {
+        throw std::runtime_error(unsupported_cipher_message("Header::serialize", cipher_));
+    }
+
     // Zero the entire buffer first so padding regions are always zero.
     buffer_.fill(0);
 
@@ -202,18 +236,6 @@ void Header::createBuffer() {
 
     // | 0x0400 | 3072 | padding | zeros — already zeroed by buffer_.fill(0) above |
 }
-
-namespace {
-template<size_t N>
-std::string hex_dump(const std::array<uint8_t, N>& arr) {
-    std::ostringstream ss;
-    for (size_t i = 0; i < N; ++i) {
-        if (i > 0) ss << ' ';
-        ss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(arr[i]);
-    }
-    return ss.str();
-}
-} // namespace
 
 std::string Header::to_string() const {
     std::ostringstream ss;
@@ -303,18 +325,3 @@ void Header::write_le64(uint8_t* buf, uint64_t value) {
     buf[7] = static_cast<uint8_t>(value >> 56);
 }
 
-void Header::read_le16(const uint8_t* buf, uint16_t& value) {
-    value = static_cast<uint16_t>(buf[0]) | (static_cast<uint16_t>(buf[1]) << 8);
-}
-
-void Header::read_le32(const uint8_t* buf, uint32_t& value) {
-    value = static_cast<uint32_t>(buf[0]) | (static_cast<uint32_t>(buf[1]) << 8) |
-            (static_cast<uint32_t>(buf[2]) << 16) | (static_cast<uint32_t>(buf[3]) << 24);
-}
-
-void Header::read_le64(const uint8_t* buf, uint64_t& value) {
-    value = static_cast<uint64_t>(buf[0]) | (static_cast<uint64_t>(buf[1]) << 8) |
-            (static_cast<uint64_t>(buf[2]) << 16) | (static_cast<uint64_t>(buf[3]) << 24) |
-            (static_cast<uint64_t>(buf[4]) << 32) | (static_cast<uint64_t>(buf[5]) << 40) |
-            (static_cast<uint64_t>(buf[6]) << 48) | (static_cast<uint64_t>(buf[7]) << 56);
-}

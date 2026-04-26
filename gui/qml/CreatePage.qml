@@ -38,7 +38,8 @@ Page {
             kdfProfileCombo.currentIndex,
             kdfMemSpin.value,
             kdfIterSpin.value,
-            kdfParallelSpin.value
+            kdfParallelSpin.value,
+            cipherCombo.currentIndex
         )
 
         showCreateError(error)
@@ -431,12 +432,7 @@ Page {
 
                     var strength = controller.estimatePasswordStrength(
                         passwordField.text,
-                        sizeSpin.value,
-                        kdfProfileCombo.currentIndex,
-                        kdfMemSpin.value,
-                        kdfIterSpin.value,
-                        kdfParallelSpin.value,
-                        cipherCombo.currentIndex
+                        kdfProfileCombo.currentIndex
                     )
                     if (strength.meetsRecommendation === true) {
                         performCreate()

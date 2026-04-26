@@ -3,6 +3,8 @@
 
 #include "enums/ECiphers.h"
 
+#include <botan/secmem.h>
+
 #include <array>
 #include <cstdint>
 #include <string>
@@ -26,7 +28,7 @@ public:
     // Derive KEK from password + salt using Argon2id with the given KDF parameters.
     // Call before wrapDek() on create or unwrapDek() on open.
     // m_kib: Argon2id memory in KiB; t: iterations; p: parallelism.
-    void deriveKek(const std::string& password, Header& header);
+    void deriveKek(const Botan::secure_vector<char>& password, Header& header);
 
     // Wrap (encrypt) the zero DEK with the derived KEK using AES-256-GCM.
     // Fills dek_nonce, encrypted_dek, and dek_auth_tag in the provided buffers.

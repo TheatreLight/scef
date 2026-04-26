@@ -8,6 +8,7 @@
 #include <array>
 #include <string>
 #include <cstdint>
+#include <type_traits>
 
 constexpr size_t   HEADER_SIZE        = 4096;
 constexpr uint32_t BLOCK_SIZE         = 65536;
@@ -157,9 +158,18 @@ private:
     void write_le16(uint8_t* buf, uint16_t value);
     void write_le32(uint8_t* buf, uint32_t value);
     void write_le64(uint8_t* buf, uint64_t value);
-    void read_le16(const uint8_t* buf, uint16_t& value);
-    void read_le32(const uint8_t* buf, uint32_t& value);
-    void read_le64(const uint8_t* buf, uint64_t& value);
+
+    template<typename T>
+    T read_le(const uint8_t*& p) {
+        static_assert(std::is_integral_v<T>, "read_le requires an integral type");
+
+        T value = 0;
+        for (size_t i = 0; i < sizeof(T); ++i) {
+            value |= static_cast<T>(p[i]) << (8 * i);
+        }
+        p += sizeof(T);
+        return value;
+    }
 
     HeaderBuffer buffer_;
 

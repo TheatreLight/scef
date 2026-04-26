@@ -7,6 +7,8 @@
 #include "FileTable.h"
 #include "NativeFile.h"
 
+#include <botan/secmem.h>
+
 #include <array>
 #include <chrono>
 #include <memory>
@@ -57,7 +59,7 @@ public:
     void init(const std::vector<std::string>& filesList, const std::string& pathToDir,
               uint64_t container_size = 0, uint32_t max_table_size = DEFAULT_MAX_TABLE_SIZE,
               bool create_new = false,
-              const std::string& password = "");
+              const Botan::secure_vector<char>& password = Botan::secure_vector<char>{});
     // Configure KDF parameters for container creation.
     // Must be called BEFORE write() when creating a new container.
     //   profile != None  → look up params from the profile table (m_kib/t/p are ignored).
@@ -78,6 +80,7 @@ public:
 
     // Returned reference is valid only while this FileManager instance is alive.
     const std::vector<FileEntry>& getFilesTable() const { return fileTable_.getFilesTable(); }
+    ECipher getCipher() const noexcept { return header_->getCipher(); }
 
 private:
     // Returns array of slot offsets computed from header fields.
@@ -137,7 +140,7 @@ private:
     void initCryptoForCreate();
 
     // Validate KDF parameters from the current header and derive the KEK from
-    // password_ + header salt.  Zeros password_ after use.
+    // password_ + header salt.
     // Must be called once per open, before any per-slot unwrapDek calls.
     // Throws std::runtime_error if KDF params are out of range or Argon2id fails.
     void validateKdfParamsAndDeriveKek();
@@ -177,7 +180,7 @@ private:
     std::unique_ptr<CryptoManager> crypto_;
     std::string containerFilePath_;
     std::vector<std::string> filesList_;
-    std::string password_;
+    Botan::secure_vector<char> password_;
     FragmentedWriteStats fragmentedWriteStats_{};
 
     uint64_t container_size_param_ = 0;   // size requested at init()

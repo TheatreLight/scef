@@ -3,8 +3,8 @@
 #include "Logger.h"
 #include "PasswordStrengthEstimator.h"
 
-#include "botan/mem_ops.h"
 #include "botan/pwdhash.h"
+#include "botan/secmem.h"
 
 #include <array>
 #include <chrono>
@@ -19,7 +19,12 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
 #else
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -70,10 +75,71 @@ void print_version() {
     std::cout << "scef v" SCEF_VERSION "\n";
 }
 
+class PasswordEchoGuard {
+public:
+    PasswordEchoGuard() {
+#ifdef _WIN32
+        handle_ = GetStdHandle(STD_INPUT_HANDLE);
+        if (handle_ == INVALID_HANDLE_VALUE || handle_ == nullptr) {
+            return;
+        }
+        DWORD mode = 0;
+        if (!GetConsoleMode(handle_, &mode)) {
+            return;
+        }
+        oldMode_ = mode;
+        restore_ = SetConsoleMode(handle_, mode & ~ENABLE_ECHO_INPUT) != 0;
+#else
+        if (isatty(fileno(stdin)) == 0) {
+            return;
+        }
+        if (tcgetattr(fileno(stdin), &oldTerm_) != 0) {
+            return;
+        }
+        termios noEcho = oldTerm_;
+        noEcho.c_lflag &= ~ECHO;
+        restore_ = tcsetattr(fileno(stdin), TCSAFLUSH, &noEcho) == 0;
+#endif
+    }
+
+    ~PasswordEchoGuard() {
+#ifdef _WIN32
+        if (restore_) {
+            SetConsoleMode(handle_, oldMode_);
+        }
+#else
+        if (restore_) {
+            tcsetattr(fileno(stdin), TCSAFLUSH, &oldTerm_);
+        }
+#endif
+    }
+
+    bool disabledEcho() const noexcept { return restore_; }
+
+private:
+    bool restore_ = false;
+#ifdef _WIN32
+    HANDLE handle_ = nullptr;
+    DWORD oldMode_ = 0;
+#else
+    termios oldTerm_{};
+#endif
+};
+
 // Read a password from stdin (up to the first newline or EOF).
-std::string read_password() {
-    std::string pw;
-    std::getline(std::cin, pw);
+Botan::secure_vector<char> read_password() {
+    PasswordEchoGuard echoGuard;
+    Botan::secure_vector<char> pw;
+    char ch = '\0';
+    while (std::cin.get(ch)) {
+        if (ch == '\n' || ch == '\r') {
+            break;
+        }
+        pw.push_back(ch);
+    }
+    if (echoGuard.disabledEcho()) {
+        std::cerr << '\n';
+    }
     if (pw.empty()) {
         throw std::runtime_error("Password cannot be empty");
     }
@@ -125,17 +191,6 @@ struct ParsedArgs {
     std::string              log_level_name;
     bool                     assumeYes       = false;
     bool                     strengthOnly    = false;
-};
-
-struct PasswordScrubber {
-    std::string& s;
-
-    ~PasswordScrubber() {
-        if (!s.empty()) {
-            Botan::secure_scrub_memory(s.data(), s.size());
-            s.clear();
-        }
-    }
 };
 
 bool hasArg(int argc, char** argv, std::string_view needle) {
@@ -407,8 +462,7 @@ static int cmd_strength_only(int argc, char** argv) {
     }
 
     try {
-        std::string password = read_password();
-        PasswordScrubber scrub{password};
+        Botan::secure_vector<char> password = read_password();
         PasswordStrengthEstimator est;
         const auto r = est.estimate(password, kdf_profile);
         std::cout << "score=" << r.score
@@ -430,7 +484,7 @@ static double benchmarkProfile(const KdfProfileParams& p) {
     }
     auto pwdhash = pwdhash_fam->from_params(p.m_kib, p.t, p.p);
 
-    constexpr std::string_view password  = "benchmark";
+    constexpr std::string_view benchmarkPassword  = "benchmark";
     constexpr size_t            salt_len  = 32;
     constexpr size_t            key_len   = 32;
     const uint8_t               salt[salt_len] = {};
@@ -438,7 +492,7 @@ static double benchmarkProfile(const KdfProfileParams& p) {
 
     auto t0 = std::chrono::high_resolution_clock::now();
     pwdhash->derive_key(key, key_len,
-                        password.data(), password.size(),
+                        benchmarkPassword.data(), benchmarkPassword.size(),
                         salt, salt_len);
     auto t1 = std::chrono::high_resolution_clock::now();
 
@@ -582,8 +636,7 @@ int main(int argc, char* argv[]) {
         printKdfSelection(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
 
         try {
-            std::string password = read_password();
-            PasswordScrubber scrub{password};
+            Botan::secure_vector<char> password = read_password();
             PasswordStrengthEstimator est;
             const auto strength = est.estimate(password, kdf_profile);
             if (!strength.meetsRecommendation &&
@@ -613,8 +666,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         try {
-            std::string password = read_password();
-            PasswordScrubber scrub{password};
+            Botan::secure_vector<char> password = read_password();
             fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.add();
@@ -636,8 +688,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         try {
-            std::string password = read_password();
-            PasswordScrubber scrub{password};
+            Botan::secure_vector<char> password = read_password();
             fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.printFilesTable();
@@ -664,8 +715,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         try {
-            std::string password = read_password();
-            PasswordScrubber scrub{password};
+            Botan::secure_vector<char> password = read_password();
             fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.extract(args.outputPath);

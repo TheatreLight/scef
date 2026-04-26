@@ -9,7 +9,6 @@
 
 #include <functional>
 #include <memory>
-#include <string>
 
 #include "DriveListModel.h"
 #include "FileListModel.h"
@@ -79,13 +78,11 @@ private:
                   std::function<void(FileManager*)> workFn,
                   std::function<void()> onSuccess);
     void refreshFileList();
-    void scrubPassword();
 
     std::unique_ptr<FileManager> fileManager_;
     FileListModel* fileListModel_;
     DriveListModel* driveListModel_;
     QString currentContainerDir_;
-    std::string currentPassword_;
     bool containerOpen_ = false;
     bool busy_ = false;
 };

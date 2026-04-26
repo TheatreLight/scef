@@ -42,7 +42,7 @@ void CryptoManager::setCipher(ECipher c) {
              static_cast<unsigned>(c), cipherAlgo_.c_str());
 }
 
-void CryptoManager::deriveKek(const std::string& password, Header& header) {
+void CryptoManager::deriveKek(const Botan::secure_vector<char>& password, Header& header) {
     LOG_INFO("Call CryptoManager::deriveKek()");
     BenchMeasurerGuard bench("CryptoManager::deriveKek");
     LOG_DEBUG("deriveKek: Argon2id(m=%u KiB, t=%u, p=%u), password_len=%zu, salt[0..2]=%02x%02x%02x",
@@ -53,8 +53,10 @@ void CryptoManager::deriveKek(const std::string& password, Header& header) {
         throw std::runtime_error("Argon2id not available in this Botan build");
     }
     auto pwdhash = pwdhash_fam->from_params(header.getKdfMKib(), header.getKdfT(), header.getKdfP());
+    static constexpr char empty_password = '\0';
+    const char* password_data = password.empty() ? &empty_password : password.data();
     pwdhash->derive_key(kek_.data(), KEK_SIZE,
-                        password.c_str(), password.size(),
+                        password_data, password.size(),
                         header.getSaltData().data(), header.getSaltData().size());
     kek_ready_ = true;
     dek_ready_ = false; // KEK changed; DEK must be re-derived via unwrapDek.

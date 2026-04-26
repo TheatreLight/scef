@@ -9,4 +9,8 @@ enum class ECipher : uint8_t {
     Kuznechik_GCM  = 0x02,
 };
 
+[[nodiscard]] constexpr bool isSupportedCipher(ECipher c) noexcept {
+    return c == ECipher::AES_256_GCM || c == ECipher::Kuznechik_GCM;
+}
+
 #endif // ECIPHERS_H

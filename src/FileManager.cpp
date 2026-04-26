@@ -15,10 +15,31 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
+
+namespace {
+
+std::string unsupported_cipher_message(const char* context, ECipher cipher) {
+    std::ostringstream ss;
+    ss << context << ": unsupported cipher_id 0x"
+       << std::hex << std::setfill('0') << std::setw(2)
+       << static_cast<unsigned>(cipher)
+       << " (expected 0x01 AES-256-GCM or 0x02 Kuznechik-GCM)";
+    return ss.str();
+}
+
+void validate_supported_cipher(const char* context, ECipher cipher) {
+    if (!isSupportedCipher(cipher)) {
+        throw std::invalid_argument(unsupported_cipher_message(context, cipher));
+    }
+}
+
+} // namespace
 
 FileManager::FileManager() {
     LOG_INFO("FileManager::FileManager()");
@@ -31,7 +52,8 @@ FileManager::~FileManager() {
 }
 
 void FileManager::init(const std::vector<std::string>& filesList, const std::string& pathToDir,
-    uint64_t containerSize, uint32_t maxTableSize, bool createNew, const std::string& password)
+    uint64_t containerSize, uint32_t maxTableSize, bool createNew,
+    const Botan::secure_vector<char>& password)
 {
     LOG_INFO("FileManager::init: files=%zu, path=%s, containerSize=%llu, maxTableSize=%u",
         filesList.size(), pathToDir.c_str(), containerSize, maxTableSize);
@@ -158,12 +180,14 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
 
 void FileManager::setCipher(ECipher c) {
     LOG_INFO("Call FileManager::setCipher(): cipher_id=0x%02x", static_cast<unsigned>(c));
+    validate_supported_cipher("FileManager::setCipher", c);
     desiredCipher_ = c;
 }
 
 // ---- crypto helpers ----
 
 void FileManager::initCryptoForCreate() {
+    validate_supported_cipher("FileManager::initCryptoForCreate", desiredCipher_);
     crypto_->generateSalt(header_->getSaltData());
     header_->setCipher(desiredCipher_);
     crypto_->setCipher(desiredCipher_);
@@ -171,10 +195,6 @@ void FileManager::initCryptoForCreate() {
               header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
     crypto_->deriveKek(password_, *header_);
     LOG_DEBUG("initCryptoForCreate: KEK derived, password length was %zu", password_.size());
-
-    // Zero the password immediately after deriving the KEK.
-    Botan::secure_scrub_memory(password_.data(), password_.size());
-    password_.clear();
 
     // Wrap the random DEK with the derived KEK.
     std::array<uint8_t, NONCE_SIZE> dekNonce{};
@@ -200,17 +220,7 @@ void FileManager::validateKdfParamsAndDeriveKek() {
         throw std::runtime_error("Header KDF parameters out of acceptable range");
     }
 
-    try {
-        crypto_->deriveKek(password_, *header_);
-    } catch (...) {
-        Botan::secure_scrub_memory(password_.data(), password_.size());
-        password_.clear();
-        throw;
-    }
-
-    // Zero the password immediately after deriving the KEK.
-    Botan::secure_scrub_memory(password_.data(), password_.size());
-    password_.clear();
+    crypto_->deriveKek(password_, *header_);
 }
 
 void FileManager::unwrapDekFromHeader() {
@@ -400,7 +410,7 @@ void FileManager::readMeta() {
         return header_->validate();
     };
 
-    // Preserve a scrub-on-exit copy of the password for potential re-derivation.
+    // Preserve a secure copy of the password for potential re-derivation.
     Botan::secure_vector<char> passwordCopy(password_.begin(), password_.end());
 
     // Compute slot offsets from file size.
@@ -431,7 +441,6 @@ void FileManager::readMeta() {
         }
 
         slotsWithValidMagic++;
-        crypto_->setCipher(header_->getCipher());
         LOG_DEBUG("readMeta: slot %zu at offset %llu — valid magic, m=%u KiB, t=%u, p=%u",
                   i, slotOff, header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
 
@@ -444,6 +453,7 @@ void FileManager::readMeta() {
         }
 
         try {
+            crypto_->setCipher(header_->getCipher());
             if (!kekDerived) {
                 password_.assign(passwordCopy.begin(), passwordCopy.end());
                 validateKdfParamsAndDeriveKek();
@@ -465,14 +475,6 @@ void FileManager::readMeta() {
             lastError = ex.what();
             LOG_DEBUG("readMeta: slot %zu auth failed: %s", i, ex.what());
         }
-    }
-
-    // Zero the local password copy and the member on all exit paths.
-    Botan::secure_scrub_memory(passwordCopy.data(), passwordCopy.size());
-    passwordCopy.clear();
-    if (!password_.empty()) {
-        Botan::secure_scrub_memory(password_.data(), password_.size());
-        password_.clear();
     }
 
     if (!recovered) {
