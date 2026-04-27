@@ -21,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace {
 
@@ -184,6 +185,10 @@ void FileManager::setCipher(ECipher c) {
     desiredCipher_ = c;
 }
 
+void FileManager::setProgressCallback(ProgressCallback cb) {
+    progressCallback_ = std::move(cb);
+}
+
 // ---- crypto helpers ----
 
 void FileManager::initCryptoForCreate() {
@@ -193,8 +198,10 @@ void FileManager::initCryptoForCreate() {
     crypto_->setCipher(desiredCipher_);
     LOG_INFO("Call FileManager::initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
               header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
+    emitProgress(ProgressStage::DerivingKey, 0.0);
     crypto_->deriveKek(password_, *header_);
     LOG_DEBUG("initCryptoForCreate: KEK derived, password length was %zu", password_.size());
+    emitProgress(ProgressStage::GeneratingMasterKey, 0.0);
 
     // Wrap the random DEK with the derived KEK.
     std::array<uint8_t, NONCE_SIZE> dekNonce{};
@@ -388,6 +395,7 @@ void FileManager::writeFileTableToAllSlots() {
 void FileManager::readMeta() {
     LOG_INFO("Call FileManager::readMeta()");
     BenchMeasurerGuard bench("FileManager::readMeta TOTAL");
+    emitProgress(ProgressStage::DerivingKey, 0.0);
     // Crash resilience strategy (spec 4.6.3): try all 4 slots, first with
     // valid HMAC wins.  KEK is derived at most twice (once per distinct salt).
 
@@ -465,7 +473,9 @@ void FileManager::readMeta() {
                 kekP    = header_->getKdfP();
                 LOG_DEBUG("readMeta: KEK derived (derivation #%d)", kekDerivations);
             }
+            emitProgress(ProgressStage::VerifyingHeader, 0.0);
             verifyHeaderHmac();
+            emitProgress(ProgressStage::UnwrappingKey, 0.0);
             unwrapDekFromHeader();
             activeSlotOffset_ = slotOff;
             recovered = true;
@@ -489,6 +499,7 @@ void FileManager::readMeta() {
         }
     }
 
+    emitProgress(ProgressStage::ReadingFileTable, 0.0);
     readFilesTable();
     LOG_DEBUG("readMeta: complete, %zu file(s) in table, container_size=%llu",
               fileTable_.getFilesTable().size(), header_->getContainerSize());
@@ -497,6 +508,7 @@ void FileManager::readMeta() {
 void FileManager::extract(const std::string& pathToOutputFolder) {
     LOG_INFO("Call FileManager::extract(): path='%s'", pathToOutputFolder.c_str());
     BenchMeasurerGuard bench("FileManager::extract TOTAL");
+    emitProgress(ProgressStage::DecryptingData, 0.0);
     std::vector<FileEntry> entries;
     if (filesList_.empty()) {
         entries = fileTable_.getFilesTable();
@@ -512,17 +524,27 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
     DecryptPipeline pipeline(*crypto_, cfg);
     auto fio = makeFragmentedIO();
     std::atomic<bool> noCancel{false};
-    pipeline.run(entries, fio, pathToOutputFolder, noCancel, nullptr);
+    auto progress = [this](uint64_t processed, uint64_t total) {
+        double fraction = 1.0;
+        if (total > 0) {
+            fraction = static_cast<double>(processed) / static_cast<double>(total);
+        }
+        fraction = std::clamp(fraction, 0.0, 1.0);
+        emitProgress(ProgressStage::DecryptingData, fraction);
+    };
+    pipeline.run(entries, fio, pathToOutputFolder, noCancel, progress);
 
     for (const auto& name : pipeline.checksumFailures())
         LOG_WARN("FileManager: File '%s' decrypted unsuccessfully, wrong checksum", name.c_str());
 
     LOG_DEBUG("extract: complete, %zu file(s) extracted", entries.size());
+    emitProgress(ProgressStage::Done, 1.0);
 }
 
 void FileManager::write() {
     LOG_INFO("Call FileManager::write()");
     BenchMeasurerGuard bench("FileManager::write TOTAL");
+    emitProgress(ProgressStage::ValidatingPassword, 0.0);
     if (filesList_.empty()) {
         throw std::runtime_error("No input files specified for create");
     }
@@ -539,13 +561,16 @@ void FileManager::write() {
             + std::to_string(available) + " bytes");
     }
 
+    emitProgress(ProgressStage::WritingHeaders, 0.0);
     writeAllSlots();
 
-    size_t endPos = writeChunks(header_->getHeaderSize() + header_->getMaxTableSize());
+    size_t endPos = writeChunks(header_->getHeaderSize() + header_->getMaxTableSize(),
+                                /*reportProgress=*/true);
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     logFragmentedWriteStats();
 
     writeFileTableToAllSlots();
+    emitProgress(ProgressStage::Done, 1.0);
 }
 
 void FileManager::add() {
@@ -582,12 +607,13 @@ void FileManager::add() {
             std::to_string(freeCapacity) + " bytes remain");
     }
 
-    size_t endPos = writeChunks(static_cast<size_t>(dataEnd));
+    size_t endPos = writeChunks(static_cast<size_t>(dataEnd), /*reportProgress=*/true);
     fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
     writeFileTableToAllSlots();
 
     LOG_DEBUG("add: complete, new data_end=%zu, file_count=%zu",
               endPos, fileTable_.getFilesTable().size());
+    emitProgress(ProgressStage::Done, 1.0);
 }
 
 // ---- print helpers ----
@@ -612,7 +638,7 @@ FragmentedIO FileManager::makeFragmentedIO() {
     return fio;
 }
 
-size_t FileManager::writeChunks(size_t offset) {
+size_t FileManager::writeChunks(size_t offset, bool reportProgress) {
     BenchMeasurerGuard bench("FileManager::writeChunks");
 
     size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
@@ -620,7 +646,20 @@ size_t FileManager::writeChunks(size_t offset) {
     EncryptPipeline pipeline(*crypto_, cfg);
     auto fragmentedIO = makeFragmentedIO();
     std::atomic<bool> noCancel{false};
-    pipeline.run(filesList_, fragmentedIO, fileTable_, *header_, offset, noCancel, nullptr);
+    std::function<void(uint64_t, uint64_t)> progress;
+    if (reportProgress) {
+        emitProgress(ProgressStage::EncryptingData, 0.0);
+        progress = [this](uint64_t processed, uint64_t total) {
+            double fraction = 1.0;
+            if (total > 0) {
+                fraction = static_cast<double>(processed) / static_cast<double>(total);
+            }
+            fraction = std::clamp(fraction, 0.0, 1.0);
+            emitProgress(ProgressStage::EncryptingData, fraction);
+        };
+    }
+
+    pipeline.run(filesList_, fragmentedIO, fileTable_, *header_, offset, noCancel, progress);
     return pipeline.endOffset();
 }
 
@@ -637,6 +676,20 @@ void FileManager::logFragmentedWriteStats() const {
             fragmentedWriteStats_.seekTime).count()),
         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
             fragmentedWriteStats_.writeTime).count()));
+}
+
+void FileManager::emitProgress(ProgressStage stage, double fraction) const noexcept {
+    if (!progressCallback_) {
+        return;
+    }
+
+    try {
+        progressCallback_(stage, std::clamp(fraction, 0.0, 1.0));
+    } catch (const std::exception& e) {
+        LOG_WARN("progress callback threw std::exception: %s", e.what());
+    } catch (...) {
+        LOG_WARN("progress callback threw unknown exception");
+    }
 }
 
 void FileManager::readFilesTable() {

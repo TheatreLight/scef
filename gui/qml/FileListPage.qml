@@ -10,9 +10,23 @@ Page {
     padding: 24
     property string pendingOperation: ""  // "add" or "extract"
     property string pendingMessage: ""
+    property string progressStage: ""
+    property real progressFraction: 0.0
 
     property var selectedIndices: ({})
 
+    function progressText() {
+        if (progressStage === "") {
+            if (pendingOperation === "extract") return "Preparing extraction..."
+            if (pendingOperation === "add") return "Preparing to add files..."
+            return "Processing..."
+        }
+        if ((progressStage === "Encrypting data..." || progressStage === "Decrypting data...")
+                && progressFraction > 0.0 && progressFraction < 1.0) {
+            return progressStage + " " + Math.round(progressFraction * 100) + "%"
+        }
+        return progressStage
+    }
 
     function getSelectedNames() {
         var names = []
@@ -45,6 +59,8 @@ Page {
             successLabel.visible = false
             pendingOperation = "add"
             pendingMessage = files.length + " file(s) added successfully"
+            progressStage = ""
+            progressFraction = 0.0
             var error = controller.addFiles(files)
             if (error !== "") {
                 errorLabel.text = error
@@ -65,6 +81,8 @@ Page {
             pendingMessage = names.length > 0
                 ? names.length + " file(s) extracted successfully"
                 : "All files extracted successfully"
+            progressStage = ""
+            progressFraction = 0.0
             var error = controller.extractFiles(names, selectedFolder)
             if (error !== "") {
                 errorLabel.text = error
@@ -281,10 +299,11 @@ Page {
             }
 
             Label {
-                text: pendingOperation === "add" ? "Adding files..."
-                    : pendingOperation === "extract" ? "Extracting files..."
-                    : "Processing..."
+                text: fileListPageRoot.progressText()
                 font.pixelSize: 16
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Math.min(fileListPageRoot.width - 96, 480)
                 Layout.alignment: Qt.AlignHCenter
             }
         }
@@ -294,6 +313,11 @@ Page {
     Connections {
         target: controller
         enabled: fileListPageRoot.StackView.status === StackView.Active
+        function onProgressChanged(stageLabel, fraction) {
+            progressStage = stageLabel
+            progressFraction = fraction
+        }
+
         function onOperationFinished(error) {
             if (error !== "") {
                 errorLabel.text = error

@@ -6,10 +6,24 @@ import QtQuick.Dialogs
 import "utils.js" as Utils
 
 Page {
+    id: startPageRoot
     padding: 32
 
     property int selectedDriveIndex: -1
     property int driveListRevision: 0
+    property string progressStage: ""
+    property real progressFraction: 0.0
+
+    function progressText() {
+        if (progressStage === "") {
+            return "Opening container..."
+        }
+        if ((progressStage === "Encrypting data..." || progressStage === "Decrypting data...")
+                && progressFraction > 0.0 && progressFraction < 1.0) {
+            return progressStage + " " + Math.round(progressFraction * 100) + "%"
+        }
+        return progressStage
+    }
 
     Component.onCompleted: controller.driveListModel.refresh()
 
@@ -25,6 +39,11 @@ Page {
 
     Connections {
         target: controller
+        function onProgressChanged(stageLabel, fraction) {
+            progressStage = stageLabel
+            progressFraction = fraction
+        }
+
         function onOperationFinished(error) {
             if (!waitingForOpen) return
             waitingForOpen = false
@@ -55,9 +74,10 @@ Page {
             }
 
             Label {
-                text: "Deriving encryption key from password.\nThis may take a few seconds..."
+                text: startPageRoot.progressText()
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
+                Layout.maximumWidth: Math.min(startPageRoot.width - 96, 480)
             }
         }
     }
@@ -107,6 +127,8 @@ Page {
 
         onAccepted: {
             errorLabel.visible = false
+            progressStage = ""
+            progressFraction = 0.0
             var pw = passwordDialog.password
             passwordDialog.password = ""
             var err = controller.openContainer(passwordDialog.containerPath, pw)

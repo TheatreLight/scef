@@ -69,8 +69,10 @@ signals:
     void busyChanged();
     void benchEnabledChanged();
     void operationFinished(const QString& error);
+    void progressChanged(const QString& stageLabel, double fraction);
 
 private:
+    void installProgressCallback(FileManager* fm);
     // Run heavy FileManager work on a background thread.
     // workFn: called on worker thread with the FileManager pointer.
     // onSuccess: called on main thread if work succeeded (fm is alive).

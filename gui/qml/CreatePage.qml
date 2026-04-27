@@ -9,6 +9,18 @@ Page {
     padding: 24
     property bool sizeError: false
     property string initialDestDir: ""
+    property string progressStage: ""
+    property real progressFraction: 0.0
+
+    function progressText() {
+        if (progressStage === "") {
+            return "Preparing container creation..."
+        }
+        if (progressStage === "Encrypting data..." && progressFraction > 0.0 && progressFraction < 1.0) {
+            return progressStage + " " + Math.round(progressFraction * 100) + "%"
+        }
+        return progressStage
+    }
 
     function collectFiles() {
         var files = []
@@ -477,8 +489,11 @@ Page {
             }
 
             Label {
-                text: "Creating container..."
+                text: createPageRoot.progressText()
                 font.pixelSize: 16
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Math.min(createPageRoot.width - 96, 480)
                 Layout.alignment: Qt.AlignHCenter
             }
         }
@@ -516,6 +531,11 @@ Page {
     Connections {
         target: controller
         enabled: createPageRoot.StackView.status === StackView.Active
+        function onProgressChanged(stageLabel, fraction) {
+            progressStage = stageLabel
+            progressFraction = fraction
+        }
+
         function onOperationFinished(error) {
             if (error !== "") {
                 errorLabel.text = error

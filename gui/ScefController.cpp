@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFileInfoList>
+#include <QMetaObject>
 #include <QPointer>
 #include <QStringList>
 #include <QUrl>
@@ -16,6 +17,7 @@
 
 #include <botan/secmem.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -55,6 +57,33 @@ EKDFProfile profileFromIndex(int kdfProfileIndex)
         case 4:  return EKDFProfile::None;
         default: return EKDFProfile::Standard;
     }
+}
+
+QString progressStageLabel(FileManager::ProgressStage stage)
+{
+    switch (stage) {
+        case FileManager::ProgressStage::ValidatingPassword:
+            return QStringLiteral("Validating password...");
+        case FileManager::ProgressStage::DerivingKey:
+            return QStringLiteral("Deriving key from password (Argon2id)...");
+        case FileManager::ProgressStage::GeneratingMasterKey:
+            return QStringLiteral("Generating master key...");
+        case FileManager::ProgressStage::WritingHeaders:
+            return QStringLiteral("Writing container headers...");
+        case FileManager::ProgressStage::EncryptingData:
+            return QStringLiteral("Encrypting data...");
+        case FileManager::ProgressStage::VerifyingHeader:
+            return QStringLiteral("Verifying header integrity...");
+        case FileManager::ProgressStage::UnwrappingKey:
+            return QStringLiteral("Unwrapping master key...");
+        case FileManager::ProgressStage::ReadingFileTable:
+            return QStringLiteral("Reading file table...");
+        case FileManager::ProgressStage::DecryptingData:
+            return QStringLiteral("Decrypting data...");
+        case FileManager::ProgressStage::Done:
+            return QStringLiteral("Done");
+    }
+    return {};
 }
 
 } // namespace
@@ -121,6 +150,9 @@ QString ScefController::createContainer(const QString& destDir,
 
     // Heavy work runs on a background thread.
     auto dirQ = QString::fromStdString(dir);
+    installProgressCallback(fileManager_.get());
+    emit progressChanged(QString(), 0.0);
+
     runAsync(std::move(fileManager_),
         [](FileManager* fm) { fm->write(); },
         [this, dirQ]() {
@@ -162,6 +194,8 @@ QString ScefController::openContainer(const QString& containerPath,
     auto dirQ = fi.absolutePath();
 
     auto fm = std::make_unique<FileManager>();
+    installProgressCallback(fm.get());
+    emit progressChanged(QString(), 0.0);
 
     runAsync(std::move(fm),
         [dir, pwd = std::move(pwd)](FileManager* f) mutable {
@@ -186,6 +220,9 @@ QString ScefController::addFiles(const QStringList& filePaths)
     try {
         auto paths = toStdPaths(filePaths);
         fileManager_->setFilesList(paths);
+
+        installProgressCallback(fileManager_.get());
+        emit progressChanged(QString(), 0.0);
 
         // Transfer ownership to the async worker; it returns via onSuccess.
         runAsync(std::move(fileManager_),
@@ -212,6 +249,9 @@ QString ScefController::extractFiles(const QStringList& fileNames,
 
         auto outDir = toLocalPath(outputDir);
         fileManager_->setFilesList(names);
+
+        installProgressCallback(fileManager_.get());
+        emit progressChanged(QString(), 0.0);
 
         runAsync(std::move(fileManager_),
             [outDir](FileManager* f) { f->extract(outDir); },
@@ -312,6 +352,30 @@ void ScefController::setBenchEnabled(bool enabled)
 
     Logger::setBenchEnabled(enabled);
     emit benchEnabledChanged();
+}
+
+void ScefController::installProgressCallback(FileManager* fm)
+{
+    if (!fm)
+        return;
+
+    // FileManager stores this callback while work runs on a worker thread.
+    // The controller is expected to outlive that work; QPointer keeps queued
+    // delivery from touching a destroyed controller if the window closes early.
+    QPointer<ScefController> guard(this);
+    fm->setProgressCallback([guard](FileManager::ProgressStage stage, double fraction) {
+        const QString label = progressStageLabel(stage);
+        const double clampedFraction = std::clamp(fraction, 0.0, 1.0);
+
+        if (!guard)
+            return;
+
+        QMetaObject::invokeMethod(guard.data(), [guard, label, clampedFraction]() {
+            if (!guard)
+                return;
+            emit guard->progressChanged(label, clampedFraction);
+        }, Qt::QueuedConnection);
+    });
 }
 
 void ScefController::runAsync(std::unique_ptr<FileManager> fm,

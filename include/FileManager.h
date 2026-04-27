@@ -11,6 +11,7 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,6 +47,21 @@ computeSlotOffsets(uint64_t containerOrFileSize, uint32_t headerSize) {
 
 class FileManager {
 public:
+    enum class ProgressStage {
+        ValidatingPassword,
+        DerivingKey,
+        GeneratingMasterKey,
+        WritingHeaders,
+        EncryptingData,
+        VerifyingHeader,
+        UnwrappingKey,
+        ReadingFileTable,
+        DecryptingData,
+        Done
+    };
+
+    using ProgressCallback = std::function<void(ProgressStage stage, double fraction)>;
+
     FileManager();
     ~FileManager();
     FileManager(const FileManager&) = delete;
@@ -66,6 +82,7 @@ public:
     //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
     void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
     void setCipher(ECipher c);
+    void setProgressCallback(ProgressCallback cb);
 
     void readMeta();
     void extract(const std::string& pathToOutputFolder);
@@ -118,7 +135,7 @@ private:
     // Write file table bytes (zero-padded to max_table_size) at slot_offset + header_size.
     void writeFileTableAt(uint64_t slot_offset, const std::vector<char>& encrypted_table);
 
-    size_t writeChunks(size_t startOffset);
+    size_t writeChunks(size_t startOffset, bool reportProgress = false);
 
     // Build a FragmentedIO facade that routes pipeline reads/writes through
     // this FileManager's containerFile_, skipping over slot areas.
@@ -159,6 +176,7 @@ private:
     void verifyHeaderHmac();
 
     void readFilesTable();
+    void emitProgress(ProgressStage stage, double fraction) const noexcept;
 
     struct FragmentedWriteStats {
         std::chrono::nanoseconds seekTime{0};
@@ -181,6 +199,7 @@ private:
     std::string containerFilePath_;
     std::vector<std::string> filesList_;
     Botan::secure_vector<char> password_;
+    ProgressCallback progressCallback_;
     FragmentedWriteStats fragmentedWriteStats_{};
 
     uint64_t container_size_param_ = 0;   // size requested at init()
