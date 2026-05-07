@@ -152,8 +152,8 @@ std::string foundKey(const char* arg) {
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
-        s == "--cipher" || s == "--log-level" || s == "-y" || 
-        s == "--strength-only") {
+        s == "--cipher" || s == "--log-level" || s == "-y" ||
+        s == "--strength-only" || s == "--password") {
         return std::string(s);
     }
     return "";
@@ -191,6 +191,7 @@ struct ParsedArgs {
     std::string              log_level_name;
     bool                     assumeYes       = false;
     bool                     strengthOnly    = false;
+    std::string              password;
 };
 
 bool hasArg(int argc, char** argv, std::string_view needle) {
@@ -253,6 +254,8 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
             out.cipher = *parsed;
         } else if (key == "--log-level") {
             out.log_level_name = argv[i];
+        } else if (key == "--password") {
+            out.password = argv[i];
         }
         key.clear();
     }
@@ -636,7 +639,8 @@ int main(int argc, char* argv[]) {
         printKdfSelection(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
 
         try {
-            Botan::secure_vector<char> password = read_password();
+            Botan::secure_vector<char> password = args.password.empty() ? read_password()
+                : Botan::secure_vector<char>(args.password.begin(), args.password.end()) ;
             PasswordStrengthEstimator est;
             const auto strength = est.estimate(password, kdf_profile);
             if (!strength.meetsRecommendation &&
