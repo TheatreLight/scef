@@ -15,6 +15,20 @@ Page {
 
     property var selectedIndices: ({})
 
+    // Computed properties — defined as bindings so QML's dependency tracker
+    // re-evaluates them whenever `selectedIndices` is reassigned (which the
+    // CheckBox.onToggled handler does via `selectedIndices = copy`).
+    // Helper functions like getSelectedCount() that read selectedIndices
+    // through a JS subscript do NOT get tracked reliably for `property var`
+    // bindings — see Qt bug QTBUG-on-property-var-tracking.
+    readonly property int selectedCount: {
+        var c = 0
+        for (var idx in selectedIndices) {
+            if (selectedIndices[idx]) c++
+        }
+        return c
+    }
+
     function progressText() {
         if (progressStage === "") {
             if (pendingOperation === "extract") return "Preparing extraction..."
@@ -38,14 +52,6 @@ Page {
             }
         }
         return names
-    }
-
-    function getSelectedCount() {
-        var count = 0
-        for (var idx in selectedIndices) {
-            if (selectedIndices[idx]) count++
-        }
-        return count
     }
 
     FileDialog {
@@ -180,7 +186,11 @@ Page {
                         id: selectBox
                         checked: !!selectedIndices[index]
                         onToggled: {
-                            var copy = selectedIndices
+                            // Build a NEW object — QML's property-var change
+                            // detection uses identity (===), so mutating the
+                            // existing object and reassigning the same reference
+                            // would not trigger selectedIndicesChanged.
+                            var copy = Object.assign({}, selectedIndices)
                             copy[index] = checked
                             selectedIndices = copy
                         }
@@ -252,8 +262,8 @@ Page {
             }
 
             Button {
-                text: getSelectedCount() > 0
-                      ? "Extract Selected (" + getSelectedCount() + ")"
+                text: selectedCount > 0
+                      ? "Extract Selected (" + selectedCount + ")"
                       : "Extract All"
                 enabled: !controller.busy
                 onClicked: {
