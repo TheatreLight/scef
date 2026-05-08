@@ -26,8 +26,8 @@ constexpr uint64_t DEFAULT_CONTAINER_SIZE = MINIMAL_CONTAINER_SIZE + 4ULL * BLOC
 constexpr std::array<char, 4> HEADER_MAGIC         = {'S', 'C', 'E', 'F'};
 constexpr uint16_t            HEADER_VERSION_MAJOR = 1;
 constexpr uint16_t            HEADER_VERSION_MINOR = 0;
-constexpr uint16_t            NONCE_SIZE            = 12;
-constexpr uint16_t            AUTH_TAG_SIZE         = 16;
+constexpr size_t              NONCE_SIZE            = 12;
+constexpr size_t              AUTH_TAG_SIZE         = 16;
 constexpr uint32_t            ENCRYPTED_BLOCK_SIZE  = BLOCK_SIZE + NONCE_SIZE + AUTH_TAG_SIZE;
 
 // ---- Binary layout offsets (spec Table 4.2) ----
@@ -116,7 +116,7 @@ public:
     // Return the stored HMAC value (read from the header buffer).
     [[nodiscard]] const std::array<uint8_t, 32>& storedHmac() const { return header_hmac_; }
 
-    const HeaderBuffer& buffer();
+    const HeaderBuffer& buffer() const;
     std::string to_string() const;
 
     void setFileTableSize(uint32_t size);
@@ -138,6 +138,8 @@ public:
     void setEncryptedDek(const std::array<uint8_t, 32>& enc_dek);
     void setDekAuthTag(const std::array<uint8_t, AUTH_TAG_SIZE>& tag);
 
+    // Mutable salt accessor — only legitimate caller is CryptoManager::generateSalt
+    // during initCryptoForCreate. Do not mutate elsewhere.
     std::array<uint8_t, 32>& getSaltData() { return salt_; }
     const std::array<uint8_t, 32>& getSalt() const { return salt_; }
     const std::array<uint8_t, NONCE_SIZE>& getDekNonce()  const { return dek_nonce_; }
@@ -179,10 +181,12 @@ private:
     uint32_t header_size_                            = HEADER_SIZE;
     ECipher  cipher_                                 = ECipher::AES_256_GCM;
     EKDF     kdf_                                    = EKDF::Argon2id;
+    // KDF parameters are initialised to the Standard profile in the constructor body
+    // (via getProfileParams(EKDFProfile::Standard)) — single source of truth.
     EKDFProfile kdf_profile_                         = EKDFProfile::Standard;
-    uint32_t kdf_m_kib_                              = 65536;   // 64 MiB — Standard profile
-    uint32_t kdf_t_                                  = 3;
-    uint32_t kdf_p_                                  = 4;
+    uint32_t kdf_m_kib_                              = 0;
+    uint32_t kdf_t_                                  = 0;
+    uint32_t kdf_p_                                  = 0;
     std::array<uint8_t, 32> salt_                    = {};
     std::array<uint8_t, NONCE_SIZE> dek_nonce_       = {};
     std::array<uint8_t, 32> encrypted_dek_           = {};

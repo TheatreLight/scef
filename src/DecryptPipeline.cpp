@@ -86,13 +86,14 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries, Fragment
             continue;
         }
 
-        uint64_t readOffset = io.skipSlots(entry.offset);
-        size_t remaining = entry.size;
+        // entry.offset is already skip-adjusted (recorded after skipSlots in EncryptPipeline::writerLoop).
+        uint64_t readOffset = entry.offset;
+        uint64_t remaining = entry.size;
 
         for (size_t i = 0; i < entry.chunks; ++i) {
             if (cancelFlag.load(std::memory_order_relaxed)) break;
 
-            size_t plainSize = std::min(remaining, static_cast<size_t>(BLOCK_SIZE));
+            size_t plainSize = static_cast<size_t>(std::min(remaining, static_cast<uint64_t>(BLOCK_SIZE)));
             size_t encSize = plainSize + NONCE_SIZE + AUTH_TAG_SIZE;
 
             ProcessedChunk task;
@@ -111,7 +112,7 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries, Fragment
                 task.file_plain_size = entry.size;
             }
 
-            remaining -= plainSize;
+            remaining -= static_cast<uint64_t>(plainSize);
 
             if (!readQueue_.push(std::move(task))) break;
         }
@@ -186,7 +187,7 @@ void DecryptPipeline::writerLoop(const std::string& outputDir, const std::atomic
             }
             currentFileName = chunk.file_path;
             std::string safeName = safeFilename(currentFileName);
-            std::string outputPath = outputDir + "/" + safeName;
+            std::string outputPath = (std::filesystem::path(outputDir) / safeName).string();
             currentOutput.open(outputPath, NativeFile::OpenMode::CreateTruncate);
             hasher->clear();
         }

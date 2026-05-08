@@ -1,6 +1,7 @@
 #ifndef FILE_TABLE_H
 #define FILE_TABLE_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -18,9 +19,9 @@
 
 struct FileEntry {
     std::string name;
-    size_t size;
-    size_t offset;
-    size_t chunks;
+    uint64_t size;
+    uint64_t offset;
+    uint64_t chunks;
     std::string checksum_sha256;
 };
 
@@ -29,8 +30,8 @@ public:
     FileTable();
     ~FileTable();
 
-    void addFileEntry(const std::string& pathToFile, const std::string& checkSum, size_t offset,
-                      size_t actual_size);
+    void addFileEntry(const std::string& pathToFile, const std::string& checkSum, uint64_t offset,
+                      uint64_t actual_size);
     std::string serialize();
     void deserialize(const std::string& data);
     std::string to_string(bool isFull = false) const;

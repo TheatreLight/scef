@@ -310,11 +310,12 @@ TEST_F(ContainerArchTest, ContainerSizeIsFixedAtCreation) {
 
     uint64_t requested_size = 4ULL * (HEADER_SIZE + BLOCK_SIZE) + BLOCK_SIZE;
 
+    fs::path container_file = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file);
     ASSERT_GE(raw.size(), HEADER_SIZE);
     uint64_t container_size = le64_at(raw.data(), 0x0078);
 
@@ -333,11 +334,12 @@ TEST_F(ContainerArchTest, FourHeaderSlotsWithMagic) {
     fs::create_directories(cdir);
 
     uint64_t requested_container_size = 4ULL * (HEADER_SIZE + BLOCK_SIZE) + BLOCK_SIZE;
+    fs::path container_file = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), requested_container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file.string(), requested_container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file);
     ASSERT_GE(raw.size(), HEADER_SIZE);
 
     uint64_t container_size = le64_at(raw.data(), 0x0078);
@@ -376,11 +378,12 @@ TEST_F(ContainerArchTest, SaltNonZeroAt0x001C_AfterCreate) {
     fs::create_directories(cdir);
 
     uint64_t container_size = 4 * 1024 * 1024;
+    fs::path container_file_salt = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_salt.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_salt);
     ASSERT_GE(raw.size(), static_cast<size_t>(0x001C + 32))
         << "Container file too small to contain salt field.";
 
@@ -402,11 +405,12 @@ TEST_F(ContainerArchTest, ContainerSizeAt0x0078_MatchesRequested) {
     fs::create_directories(cdir);
 
     uint64_t requested_size = 4 * 1024 * 1024;
+    fs::path container_file_csz = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_csz.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_csz);
     ASSERT_GE(raw.size(), static_cast<size_t>(0x0078 + 8))
         << "Container file too small to contain container_size field.";
 
@@ -426,11 +430,12 @@ TEST_F(ContainerArchTest, AllFourSlotsAreByteIdentical) {
     fs::create_directories(cdir);
 
     uint64_t container_size = 4 * 1024 * 1024;
+    fs::path container_file_ident = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_ident.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_ident);
     ASSERT_GE(raw.size(), static_cast<size_t>(HEADER_SIZE));
 
     uint64_t stored_size = le64_at(raw.data(), 0x0078);
@@ -475,11 +480,12 @@ TEST_F(ContainerArchTest, AllFourSlotsAreByteIdentical_NonPowerOf2Size) {
     static_assert(test_size >= 4ULL * (HEADER_SIZE + BLOCK_SIZE),
                   "test_size must be >= MINIMAL_CONTAINER_SIZE");
 
+    fs::path container_file_odd = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), test_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_odd.string(), test_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_odd);
     ASSERT_GE(raw.size(), static_cast<size_t>(HEADER_SIZE));
 
     uint64_t stored_size = le64_at(raw.data(), 0x0078);
@@ -533,22 +539,23 @@ TEST_F(ContainerArchTest, AddIncrementsHeaderVersion) {
 
     uint64_t container_size = 4 * 1024 * 1024; // 4 MiB
 
+    fs::path container_file_ver = cdir / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, container_file_ver.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
 
-    auto raw1 = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw1 = read_file(container_file_ver);
     uint32_t ver1 = le32_at(raw1.data(), 0x0090);
 
     {
         FileManager fm;
-        fm.init({f2.string()}, cdir.string());
+        fm.init({f2.string()}, container_file_ver.string());
         fm.add();
     }
 
-    auto raw2 = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw2 = read_file(container_file_ver);
     uint32_t ver2 = le32_at(raw2.data(), 0x0090);
 
     EXPECT_GT(ver2, ver1)
@@ -588,11 +595,12 @@ TEST_F(FileTableSpecTest, FileTableSizeIncludesNonceAndTag) {
     fs::create_directories(cdir);
 
     uint64_t container_size = 1024 * 1024; // 1 MiB
+    fs::path container_file_ft1 = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_ft1.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_ft1);
     ASSERT_GE(raw.size(), HEADER_SIZE);
 
     uint32_t ft_size_at_spec_offset = le32_at(raw.data(), 0x0080);
@@ -609,11 +617,12 @@ TEST_F(FileTableSpecTest, FileTableStoredInSlotNotAfterData) {
     fs::create_directories(cdir);
 
     uint64_t container_size = 1024 * 1024;
+    fs::path container_file_ft2 = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_ft2.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_ft2);
     ASSERT_GE(raw.size(), HEADER_SIZE + NONCE_SIZE + AUTH_TAG_SIZE);
 
     uint32_t ft_size = le32_at(raw.data(), 0x0080);
@@ -668,19 +677,20 @@ TEST_F(ContainerOpsTest, OriginalFileIntactAfterAdd) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath1 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, cpath1.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string());
+        fm.init({f2.string()}, cpath1.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"original.bin"}, container_dir_.string());
+        fm.init({"original.bin"}, cpath1.string());
         fm.extract(output_dir_.string());
     }
 
@@ -700,24 +710,25 @@ TEST_F(ContainerOpsTest, ThreeSequentialAddsAllExtractable) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath2 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, cpath2.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string());
+        fm.init({f2.string()}, cpath2.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({f3.string()}, container_dir_.string());
+        fm.init({f3.string()}, cpath2.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"file1.bin", "file2.bin", "file3.bin"}, container_dir_.string());
+        fm.init({"file1.bin", "file2.bin", "file3.bin"}, cpath2.string());
         fm.extract(output_dir_.string());
     }
 
@@ -739,19 +750,20 @@ TEST_F(ContainerOpsTest, MultiBlockFileIntactAfterAdd) {
 
     uint64_t container_size = 16 * 1024 * 1024;
 
+    fs::path cpath3 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, cpath3.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string());
+        fm.init({f2.string()}, cpath3.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"big.bin"}, container_dir_.string());
+        fm.init({"big.bin"}, cpath3.string());
         fm.extract(output_dir_.string());
     }
 
@@ -768,23 +780,24 @@ TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath_kuz = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
         fm.setCipher(ECipher::Kuznechik_GCM);
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({f1.string()}, cpath_kuz.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/true, password);
         fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({f2.string()}, cpath_kuz.string(), 0, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/false, password);
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"first.bin", "second.bin"}, container_dir_.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({"first.bin", "second.bin"}, cpath_kuz.string(), 0, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/false, password);
         fm.extract(output_dir_.string());
     }
@@ -793,7 +806,7 @@ TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
     EXPECT_EQ(read_file(output_dir_ / "second.bin"), c2);
 
     HeaderBuffer rawHeader{};
-    std::ifstream in(container_dir_ / CONTAINER_FILE_NAME, std::ios::binary);
+    std::ifstream in(cpath_kuz, std::ios::binary);
     ASSERT_TRUE(in.good());
     in.read(reinterpret_cast<char*>(rawHeader.data()), static_cast<std::streamsize>(rawHeader.size()));
     ASSERT_EQ(in.gcount(), static_cast<std::streamsize>(rawHeader.size()));
@@ -810,10 +823,11 @@ TEST_F(ContainerOpsTest, CorruptCipherIdInSlot0FallsBackToSlot1) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath_corrupt_src = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
         fm.setCipher(ECipher::Kuznechik_GCM);
-        fm.init({src.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({src.string()}, cpath_corrupt_src.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/true, password);
         fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
         fm.write();
@@ -821,14 +835,15 @@ TEST_F(ContainerOpsTest, CorruptCipherIdInSlot0FallsBackToSlot1) {
 
     fs::path recovered_dir = tmp_dir_ / "recovered_container";
     fs::create_directories(recovered_dir);
-    auto raw = read_file(container_dir_ / CONTAINER_FILE_NAME);
+    auto raw = read_file(cpath_corrupt_src);
     ASSERT_GT(raw.size(), POSITION_CIPHER_ID);
     raw[POSITION_CIPHER_ID] = 0xFF;
-    write_file(recovered_dir / CONTAINER_FILE_NAME, raw);
+    fs::path cpath_corrupt_rec = recovered_dir / CONTAINER_FILE_NAME;
+    write_file(cpath_corrupt_rec, raw);
 
     {
         FileManager fm;
-        ASSERT_NO_THROW(fm.init({}, recovered_dir.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+        ASSERT_NO_THROW(fm.init({}, cpath_corrupt_rec.string(), 0, DEFAULT_MAX_TABLE_SIZE,
                                 /*create_new=*/false, password));
         EXPECT_EQ(fm.getCipher(), ECipher::Kuznechik_GCM)
             << "Open must recover from slot 1 and keep the original cipher selection.";
@@ -853,7 +868,7 @@ TEST_F(ContainerOpsTest, InitDoesNotCreateContainerForRead) {
     EXPECT_FALSE(fs::exists(container_file));
 
     FileManager fm;
-    EXPECT_THROW(fm.init({}, cdir.string()), std::runtime_error)
+    EXPECT_THROW(fm.init({}, container_file.string()), std::runtime_error)
         << "Spec: init() for read operations must throw if the container does not exist.";
 
     EXPECT_FALSE(fs::exists(container_file))
@@ -917,9 +932,10 @@ TEST_F(EmptyFileTest, EmptyFileAppearsInTable) {
     write_file(nonempty_file, {0x01, 0x02, 0x03});
 
     uint64_t container_size = 4 * 1024 * 1024;
+    fs::path cpath_empty1 = container_dir_ / CONTAINER_FILE_NAME;
     FileManager fm;
     fm.init({empty_file.string(), nonempty_file.string()},
-            container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+            cpath_empty1.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
     const auto& table = fm.getFilesTable();
@@ -947,15 +963,16 @@ TEST_F(EmptyFileTest, EmptyFileExtractedCorrectly) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath_empty2 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
         fm.init({empty_file.string(), nonempty_file.string()},
-                container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+                cpath_empty2.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({"empty.bin", "data.bin"}, container_dir_.string());
+        fm.init({"empty.bin", "data.bin"}, cpath_empty2.string());
         fm.extract(output_dir_.string());
     }
 

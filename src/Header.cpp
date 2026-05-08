@@ -1,4 +1,5 @@
 #include "Header.h"
+#include "KdfProfiles.h"
 #include "Logger.h"
 
 #include <algorithm>
@@ -34,6 +35,16 @@ Header::Header()
 : container_size_(DEFAULT_CONTAINER_SIZE)
 {
     LOG_INFO("Header::Header()");
+    // Initialise KDF parameters from the Standard profile — single source of truth.
+    // This ensures any container created without an explicit setKdfParams() call
+    // uses well-defined, documented parameters rather than arbitrary in-class defaults.
+    const KdfProfileParams* standard = getProfileParams(EKDFProfile::Standard);
+    if (standard) {
+        kdf_profile_ = EKDFProfile::Standard;
+        kdf_m_kib_   = standard->m_kib;
+        kdf_t_        = standard->t;
+        kdf_p_        = standard->p;
+    }
     createBuffer();
 }
 
@@ -135,7 +146,7 @@ std::array<uint8_t, HMAC_PROTECTED_SIZE> Header::hmacProtectedBytes() const {
     return result;
 }
 
-const HeaderBuffer& Header::buffer() {
+const HeaderBuffer& Header::buffer() const {
     return buffer_;
 }
 

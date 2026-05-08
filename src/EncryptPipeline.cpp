@@ -140,7 +140,10 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files, const st
                 hasher->clear();
             }
 
-            if (!readQueue_.push(std::move(task)) || isLast) {
+            // Exit on either queue-closed (push returned false) or end of file.
+            // Separated for clarity: the two exit conditions are independent.
+            const bool pushed = readQueue_.push(std::move(task));
+            if (!pushed || isLast) {
                 break;
             }
         }

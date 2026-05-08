@@ -4,9 +4,11 @@
 
 #include "nlohmann/json.hpp"
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <sstream>
+#include <unordered_set>
 #include <nlohmann/detail/conversions/to_json.hpp>
 #include <nlohmann/json_fwd.hpp>
 
@@ -19,27 +21,50 @@ FileTable::~FileTable() {
 }
 
 void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checkSum,
-    size_t offset, size_t actual_size)
+    uint64_t offset, uint64_t actual_size)
 {
     LOG_INFO("Call FileTable::addFileEntry()");
-    FileEntry file;
-    std::string fileName = std::filesystem::path(pathToFile).filename().string();
-    while (std::any_of(filesTable_.begin(), filesTable_.end(),
-        [&fileName](const FileEntry& fileEntry){return fileName == fileEntry.name;})) {
-            fileName = "(copy)" + fileName;
+
+    // Build a set of existing names for O(1) collision lookup.
+    std::unordered_set<std::string> existingNames;
+    existingNames.reserve(filesTable_.size());
+    for (const auto& e : filesTable_) {
+        existingNames.insert(e.name);
     }
+
+    // Resolve duplicate names using numeric suffix: "file.txt", "file (2).txt", "file (3).txt".
+    // Extension = last dot only; files with no dot get suffix appended before end-of-string.
+    std::filesystem::path fsPath = std::filesystem::path(pathToFile).filename();
+    std::string stem      = fsPath.stem().string();
+    std::string extension = fsPath.extension().string(); // includes the dot, or empty
+    std::string fileName  = stem + extension;
+
+    if (existingNames.count(fileName)) {
+        for (uint64_t n = 2; ; ++n) {
+            std::string candidate = stem + " (" + std::to_string(n) + ")" + extension;
+            if (!existingNames.count(candidate)) {
+                fileName = candidate;
+                break;
+            }
+        }
+    }
+
+    FileEntry file;
     file.name = fileName;
     // Use the actual bytes read during writeChunks() — not a re-query of the filesystem.
     // This avoids a TOCTOU race if the source file changes between writing and recording.
-    file.size = actual_size;
-    size_t numChunks = file.size / BLOCK_SIZE + (file.size % BLOCK_SIZE != 0);
-    file.chunks = numChunks;
+    file.size   = actual_size;
+    file.chunks = (actual_size == 0) ? 0
+                : (actual_size / BLOCK_SIZE + (actual_size % BLOCK_SIZE != 0));
     file.offset = offset;
     file.checksum_sha256 = checkSum;
 
     filesTable_.push_back(file);
-    LOG_DEBUG("FileTable::addFileEntry: '%s', size=%zu, chunks=%zu, offset=%zu, sha256=%.16s...",
-              file.name.c_str(), file.size, file.chunks, file.offset,
+    LOG_DEBUG("FileTable::addFileEntry: '%s', size=%llu, chunks=%llu, offset=%llu, sha256=%.16s...",
+              file.name.c_str(),
+              static_cast<unsigned long long>(file.size),
+              static_cast<unsigned long long>(file.chunks),
+              static_cast<unsigned long long>(file.offset),
               file.checksum_sha256.c_str());
 }
 
@@ -67,12 +92,31 @@ void FileTable::deserialize(const std::string& data) {
     next_write_offset_ = tmp.value("next_write_offset", uint64_t{0});
     for (const auto& file : tmp["files"]) {
         FileEntry entry;
-        entry.name = file["name"].get<std::string>();
-        entry.size = file["size"].get<size_t>();
-        entry.offset = file["offset"].get<size_t>();
-        entry.chunks = file["chunks"].get<size_t>();
-        entry.checksum_sha256 = file["checksum_sha256"].get<std::string>();
+        entry.name             = file["name"].get<std::string>();
+        entry.size             = file["size"].get<uint64_t>();
+        entry.offset           = file["offset"].get<uint64_t>();
+        entry.chunks           = file["chunks"].get<uint64_t>();
+        entry.checksum_sha256  = file["checksum_sha256"].get<std::string>();
         filesTable_.push_back(entry);
+    }
+
+    // F-5: If next_write_offset is 0 but entries exist, the field was absent in
+    // an older container or the table was partially reconstructed. Recompute to
+    // prevent add() from overwriting offset 0 (the primary header slot).
+    if (next_write_offset_ == 0 && !filesTable_.empty()) {
+        uint64_t recomputed = 0;
+        for (const auto& entry : filesTable_) {
+            uint64_t entryEnd = entry.offset + entry.chunks * ENCRYPTED_BLOCK_SIZE;
+            if (entryEnd > recomputed) {
+                recomputed = entryEnd;
+            }
+        }
+        if (recomputed > 0) {
+            LOG_WARN("FileTable::deserialize: next_write_offset absent; "
+                     "recomputed from file entries as %llu",
+                     static_cast<unsigned long long>(recomputed));
+            next_write_offset_ = recomputed;
+        }
     }
 }
 
