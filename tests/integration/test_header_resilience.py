@@ -386,10 +386,16 @@ class TestFileTableCorruption:
 
     def test_TC_HDR_11_corrupt_file_table_slot0_header_intact(self, tmp_path):
         """
-        TC-HDR-11: Corrupt the file table area of slot 0 (first byte after header)
-        while leaving the header HMAC-protected bytes and magic intact.
-        Expected: slot 0 header HMAC still valid → readMeta() tries to use slot 0
-        → but GCM decryption of the file table fails → 'scef list' exits non-zero.
+        TC-HDR-11: Corrupt the file table area of slot 0 (first bytes after header)
+        while leaving slot 0 header HMAC valid AND slots 1-3 fully intact.
+
+        Expected: readMeta() validates slot 0 header (HMAC + DEK unwrap pass),
+        attempts to decrypt slot 0 file table → GCM auth fails → falls through to
+        slot 1, whose file table is healthy. 'scef list' must SUCCEED via slot 1
+        recovery.
+
+        This is the spec-correct crash-resilience behavior fixed by src F-1
+        (Wave 2): the file-table read is now inside the per-slot recovery loop.
         """
         cdir, container_path, _ = make_test_container(tmp_path)
 
@@ -397,35 +403,36 @@ class TestFileTableCorruption:
         table_start = HEADER_SIZE
         corrupt_bytes(container_path, table_start, 64, fill=b"\xAA")
 
-        result = list_container(cdir, expect_success=False)
-        assert result.returncode != 0, (
-            "scef list must fail when the slot 0 file table ciphertext is corrupted"
+        result = list_container(cdir, expect_success=True)
+        assert result.returncode == 0, (
+            "scef list must succeed via slot-1 recovery when only slot 0 file "
+            "table is corrupted (slots 1-3 are intact)"
         )
 
     def test_TC_HDR_12_corrupt_file_table_slot0_only_slot1_plus_intact(self, tmp_path):
         """
-        TC-HDR-12: Corrupt slot 0 file table but leave slot 0 header and all of
-        slots 1-3 intact.
+        TC-HDR-12: Corrupt the entire slot 0 file table region (max_table_size
+        bytes) but leave slot 0 header and slots 1-3 intact.
 
-        Expected behavior (per implementation): readMeta() uses slot 0 header
-        (magic valid, HMAC valid) then reads the file table from slot 0's table
-        area.  Since the file table is tied to the same slot as the header, it
-        finds a corrupt table and must fail.
+        Expected: readMeta() validates slot 0 header, attempts table decrypt,
+        AES-GCM auth fails on the corrupt ciphertext, recovery loop advances to
+        slot 1 whose header AND table are both healthy. 'scef list' must
+        SUCCEED.
 
-        This test documents the current design: file table fallback is NOT
-        independent of header fallback.  Recovery happens at the slot level, not
-        the table level.
+        This verifies that file-table recovery is NOT coupled to header
+        recovery — the loop can keep trying slots even after a slot's header
+        validates but its table fails (src F-1, Wave 2).
         """
         cdir, container_path, _ = make_test_container(tmp_path)
 
-        # Corrupt only the file table in slot 0; all headers remain valid.
+        # Corrupt only the file table in slot 0; all headers and slots 1-3 remain valid.
         table_start = HEADER_SIZE
         corrupt_bytes(container_path, table_start, DEFAULT_MAX_TABLE_SIZE, fill=b"\xBB")
 
-        result = list_container(cdir, expect_success=False)
-        assert result.returncode != 0, (
-            "scef list must fail when slot 0 file table is corrupted "
-            "(file table is read from the same slot as the validated header)"
+        result = list_container(cdir, expect_success=True)
+        assert result.returncode == 0, (
+            "scef list must succeed via slot-1 recovery when slot 0 file "
+            "table is fully corrupted (slots 1-3 are intact)"
         )
 
 
