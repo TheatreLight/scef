@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "PasswordStrengthEstimator.h"
 
+#include "botan/mem_ops.h"
 #include "botan/pwdhash.h"
 #include "botan/secmem.h"
 
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -44,6 +46,11 @@ void print_help() {
               << "\n"
               << "Options:\n"
               << "  -c <dir>                  Path to container directory\n"
+              << "  --name <filename>         Container filename (no path separators allowed).\n"
+              << "                            create: default is auto-numbered (container.scef,\n"
+              << "                              container_1.scef, ...) — never overwrites existing files.\n"
+              << "                            open/add/list/extract: default is container.scef;\n"
+              << "                              if that does not exist, the single *.scef in -c is used.\n"
               << "  -f <file>                 File to add or extract (repeatable)\n"
               << "  -o <dir>                  Output directory for extract\n"
               << "  -s <bytes>                Fixed container size in bytes (required for create)\n"
@@ -127,6 +134,10 @@ private:
 };
 
 // Read a password from stdin (up to the first newline or EOF).
+// On Windows, the bytes delivered by std::cin use the active console input code page
+// (GetConsoleCP()), which may differ from UTF-8 for non-ASCII characters.  The browser
+// viewer always encodes the password as UTF-8 (hash-wasm uses TextEncoder internally),
+// so we convert to UTF-8 here to ensure both paths hash the same byte sequence.
 Botan::secure_vector<char> read_password() {
     PasswordEchoGuard echoGuard;
     Botan::secure_vector<char> pw;
@@ -143,6 +154,58 @@ Botan::secure_vector<char> read_password() {
     if (pw.empty()) {
         throw std::runtime_error("Password cannot be empty");
     }
+
+#ifdef _WIN32
+    // Convert from the active console input code page to UTF-8 so that non-ASCII
+    // passwords produce the same byte sequence as the browser viewer.
+    const UINT cp = GetConsoleCP();
+    if (cp != CP_UTF8) {
+        // Step 1: CP → UTF-16.
+        const int wlen = MultiByteToWideChar(
+            cp, 0,
+            pw.data(), static_cast<int>(pw.size()),
+            nullptr, 0);
+        if (wlen <= 0) {
+            // Conversion failed — fall back to raw bytes and warn.
+            LOG_WARN("read_password: MultiByteToWideChar failed (cp=%u, err=%lu); "
+                     "non-ASCII passwords may not match browser viewer",
+                     cp, GetLastError());
+        } else {
+            // Use a raw buffer so we can scrub it explicitly.
+            auto* wbuf = static_cast<wchar_t*>(std::malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
+            if (!wbuf) {
+                throw std::runtime_error("read_password: out of memory during CP→UTF-16 conversion");
+            }
+            MultiByteToWideChar(cp, 0, pw.data(), static_cast<int>(pw.size()), wbuf, wlen);
+
+            // Step 2: UTF-16 → UTF-8.
+            const int u8len = WideCharToMultiByte(
+                CP_UTF8, 0,
+                wbuf, wlen,
+                nullptr, 0,
+                nullptr, nullptr);
+            if (u8len <= 0) {
+                Botan::secure_scrub_memory(wbuf, static_cast<size_t>(wlen) * sizeof(wchar_t));
+                std::free(wbuf);
+                LOG_WARN("read_password: WideCharToMultiByte failed (err=%lu); "
+                         "non-ASCII passwords may not match browser viewer",
+                         GetLastError());
+            } else {
+                Botan::secure_vector<char> utf8(static_cast<size_t>(u8len));
+                WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen,
+                                    utf8.data(), u8len,
+                                    nullptr, nullptr);
+                Botan::secure_scrub_memory(wbuf, static_cast<size_t>(wlen) * sizeof(wchar_t));
+                std::free(wbuf);
+
+                // Scrub the original (code-page) bytes and replace with UTF-8.
+                Botan::secure_scrub_memory(pw.data(), pw.size());
+                pw = std::move(utf8);
+            }
+        }
+    }
+#endif // _WIN32
+
     return pw;
 }
 
@@ -153,7 +216,7 @@ std::string foundKey(const char* arg) {
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
         s == "--cipher" || s == "--log-level" || s == "-y" ||
-        s == "--strength-only" || s == "--password") {
+        s == "--strength-only" || s == "--password" || s == "--name") {
         return std::string(s);
     }
     return "";
@@ -177,7 +240,8 @@ std::optional<ECipher> parseCipherName(const std::string& text) {
 }
 
 struct ParsedArgs {
-    std::string              containerPath;
+    std::string              containerPath;   // -c: container directory (or full path for open/add)
+    std::string              containerName;   // --name: filename only (no separators)
     std::string              outputPath;
     std::vector<std::string> fileList;
     uint64_t                 container_size  = 0;
@@ -256,6 +320,8 @@ int parseArgs(int argc, char** argv, ParsedArgs& out, const std::string& textUsa
             out.log_level_name = argv[i];
         } else if (key == "--password") {
             out.password = argv[i];
+        } else if (key == "--name") {
+            out.containerName = argv[i];
         }
         key.clear();
     }
@@ -333,6 +399,65 @@ bool forceStrengthPrompt() {
 }
 
 } // namespace
+
+// Validate that a user-supplied container filename contains no path separators.
+// Returns EXIT_SUCCESS (0) on success, EXIT_FAILURE on error.
+static int validateContainerName(const std::string& name) {
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
+        LOG_ERROR("--name must be a filename only (no '/' or '\\' separators): %s", name.c_str());
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
+// Resolve the full path to an existing container file for open/list/extract/add.
+// Priority:
+//   1. If --name was given, use dir/name unconditionally.
+//   2. If dir/container.scef exists, use it.
+//   3. Scan dir for *.scef files; if exactly one exists, use it.
+//   4. Otherwise error.
+// Returns EXIT_SUCCESS and sets out_path on success; returns EXIT_FAILURE on error.
+static int resolveExistingContainerPath(const std::string& dir,
+                                         const std::string& name,
+                                         std::string& out_path) {
+    namespace fs = std::filesystem;
+    if (!name.empty()) {
+        out_path = (fs::path(dir) / name).string();
+        return EXIT_SUCCESS;
+    }
+
+    const fs::path defaultPath = fs::path(dir) / CONTAINER_FILE_NAME;
+    if (fs::exists(defaultPath)) {
+        out_path = defaultPath.string();
+        return EXIT_SUCCESS;
+    }
+
+    // Fallback: scan for a single *.scef file in the directory.
+    std::vector<fs::path> found;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (ec) { break; }
+        if (entry.path().extension() == ".scef") {
+            found.push_back(entry.path());
+        }
+    }
+    if (ec) {
+        LOG_ERROR("Cannot scan directory '%s': %s", dir.c_str(), ec.message().c_str());
+        return EXIT_FAILURE;
+    }
+    if (found.size() == 1) {
+        out_path = found[0].string();
+        return EXIT_SUCCESS;
+    }
+    if (found.empty()) {
+        LOG_ERROR("No *.scef container found in '%s'. "
+                  "Use --name <filename> to specify the container.", dir.c_str());
+    } else {
+        LOG_ERROR("Multiple *.scef files found in '%s'. "
+                  "Use --name <filename> to select one.", dir.c_str());
+    }
+    return EXIT_FAILURE;
+}
 
 // Resolve KDF parameters from parsed CLI args.
 // On success returns 0 and fills out profile/m_kib/t/p.
@@ -490,6 +615,7 @@ static double benchmarkProfile(const KdfProfileParams& p) {
     constexpr std::string_view benchmarkPassword  = "benchmark";
     constexpr size_t            salt_len  = 32;
     constexpr size_t            key_len   = 32;
+    // Zero salt is intentional: Argon2id timing depends only on m/t/p, not on salt value.
     const uint8_t               salt[salt_len] = {};
     uint8_t                     key[key_len]   = {};
 
@@ -500,8 +626,7 @@ static double benchmarkProfile(const KdfProfileParams& p) {
     auto t1 = std::chrono::high_resolution_clock::now();
 
     // Scrub key material immediately — it is meaningless but good practice.
-    volatile uint8_t* vk = key;
-    for (size_t i = 0; i < key_len; ++i) { vk[i] = 0; }
+    Botan::secure_scrub_memory(key, key_len);
 
     std::chrono::duration<double> elapsed = t1 - t0;
     return elapsed.count();
@@ -609,6 +734,7 @@ int main(int argc, char* argv[]) {
             "-c <container dir path> "
             "-f <file list> "
             "-s <size bytes> "
+            "[--name <filename>] "
             "[--cipher <aes|kuznechik>] "
             "[--kdf-profile <name> | --kdf-m <MiB> --kdf-t <n> --kdf-p <n>]\n";
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
@@ -630,6 +756,10 @@ int main(int argc, char* argv[]) {
             LOG_ERROR("at least one -f <file> is required for create");
             return EXIT_FAILURE;
         }
+        if (!args.containerName.empty() &&
+            EXIT_FAILURE == validateContainerName(args.containerName)) {
+            return EXIT_FAILURE;
+        }
 
         EKDFProfile kdf_profile{};
         uint32_t    kdf_m_kib = 0, kdf_t = 0, kdf_p = 0;
@@ -638,16 +768,33 @@ int main(int argc, char* argv[]) {
         }
         printKdfSelection(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
 
+        // Compute the full container file path.
+        // If --name was supplied, use it; otherwise auto-number to avoid overwriting.
+        std::string containerFilePath;
+        if (!args.containerName.empty()) {
+            containerFilePath =
+                (std::filesystem::path(args.containerPath) / args.containerName).string();
+        } else {
+            containerFilePath = nextAvailableContainerPath(args.containerPath);
+        }
+
         try {
-            Botan::secure_vector<char> password = args.password.empty() ? read_password()
-                : Botan::secure_vector<char>(args.password.begin(), args.password.end()) ;
+            Botan::secure_vector<char> password;
+            if (args.password.empty()) {
+                password = read_password();
+            } else {
+                password = Botan::secure_vector<char>(args.password.begin(), args.password.end());
+                // Scrub the plain-string copy immediately after transfer.
+                Botan::secure_scrub_memory(args.password.data(), args.password.size());
+                args.password.clear();
+            }
             PasswordStrengthEstimator est;
             const auto strength = est.estimate(password, kdf_profile);
             if (!strength.meetsRecommendation &&
                 EXIT_FAILURE == confirmWeakPassword(strength, args.assumeYes)) {
                 return EXIT_FAILURE;
             }
-            fileManager.init(args.fileList, args.containerPath, args.container_size,
+            fileManager.init(args.fileList, containerFilePath, args.container_size,
                              args.max_table_size, /*create_new=*/true, password);
             fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
             fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
@@ -657,7 +804,8 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
     } else if (cmd == "add") {
-        const std::string textUsage = "Usage: scef add -c <path to container> -f <file>\n";
+        const std::string textUsage =
+            "Usage: scef add -c <container dir> [-f <file>] [--name <filename>]\n";
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
         }
@@ -669,9 +817,18 @@ int main(int argc, char* argv[]) {
             LOG_ERROR("-c <container_dir> is required for add");
             return EXIT_FAILURE;
         }
+        if (!args.containerName.empty() &&
+            EXIT_FAILURE == validateContainerName(args.containerName)) {
+            return EXIT_FAILURE;
+        }
+        std::string containerFilePath;
+        if (EXIT_FAILURE == resolveExistingContainerPath(
+                args.containerPath, args.containerName, containerFilePath)) {
+            return EXIT_FAILURE;
+        }
         try {
             Botan::secure_vector<char> password = read_password();
-            fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
+            fileManager.init(args.fileList, containerFilePath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.add();
         } catch (const std::exception& e) {
@@ -679,7 +836,8 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
     } else if (cmd == "list") {
-        const std::string textUsage = "Usage: scef list -c <path to container>\n";
+        const std::string textUsage =
+            "Usage: scef list -c <container dir> [--name <filename>]\n";
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 4)) {
             return EXIT_FAILURE;
         }
@@ -691,9 +849,18 @@ int main(int argc, char* argv[]) {
             LOG_ERROR("-c <container_dir> is required for list");
             return EXIT_FAILURE;
         }
+        if (!args.containerName.empty() &&
+            EXIT_FAILURE == validateContainerName(args.containerName)) {
+            return EXIT_FAILURE;
+        }
+        std::string containerFilePath;
+        if (EXIT_FAILURE == resolveExistingContainerPath(
+                args.containerPath, args.containerName, containerFilePath)) {
+            return EXIT_FAILURE;
+        }
         try {
             Botan::secure_vector<char> password = read_password();
-            fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
+            fileManager.init(args.fileList, containerFilePath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.printFilesTable();
         } catch (const std::exception& e) {
@@ -702,7 +869,8 @@ int main(int argc, char* argv[]) {
         }
     } else if (cmd == "extract") {
         const std::string textUsage =
-            "Usage: scef extract -c <container> -o <path to output> -f <file list(optional)>";
+            "Usage: scef extract -c <container dir> -o <output dir> "
+            "[-f <file>] [--name <filename>]\n";
         if (EXIT_FAILURE == parseArgs(argc, argv, args, textUsage, 6)) {
             return EXIT_FAILURE;
         }
@@ -718,9 +886,18 @@ int main(int argc, char* argv[]) {
             LOG_ERROR("-o <output_dir> is required for extract");
             return EXIT_FAILURE;
         }
+        if (!args.containerName.empty() &&
+            EXIT_FAILURE == validateContainerName(args.containerName)) {
+            return EXIT_FAILURE;
+        }
+        std::string containerFilePath;
+        if (EXIT_FAILURE == resolveExistingContainerPath(
+                args.containerPath, args.containerName, containerFilePath)) {
+            return EXIT_FAILURE;
+        }
         try {
             Botan::secure_vector<char> password = read_password();
-            fileManager.init(args.fileList, args.containerPath, 0, DEFAULT_MAX_TABLE_SIZE,
+            fileManager.init(args.fileList, containerFilePath, 0, DEFAULT_MAX_TABLE_SIZE,
                              /*create_new=*/false, password);
             fileManager.extract(args.outputPath);
         } catch (const std::exception& e) {
