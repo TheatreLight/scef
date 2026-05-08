@@ -10,13 +10,33 @@ Page {
     property bool sizeError: false
     property string initialDestDir: ""
     property string progressStage: ""
-    property real progressFraction: 0.0
+    property real progressFraction: -1.0
+
+    // Convert a file:// URL or plain path to a display-friendly local path.
+    // Handles Windows (file:///C:/path -> C:/path) and POSIX (file:///path -> /path).
+    function toDisplayPath(urlOrPath) {
+        if (urlOrPath.startsWith("file:///")) {
+            var s = urlOrPath.substring(8)
+            if (/^[A-Za-z]:\//.test(s)) return s  // Windows drive letter
+            return "/" + s                          // POSIX
+        }
+        if (urlOrPath.startsWith("file://")) {
+            return urlOrPath.substring(7)
+        }
+        return urlOrPath
+    }
+
+    // Strip the file:// scheme to get the raw directory path for C++ calls.
+    function toDirPath(urlOrPath) {
+        return toDisplayPath(urlOrPath)
+    }
 
     function progressText() {
         if (progressStage === "") {
             return "Preparing container creation..."
         }
-        if (progressStage === "Encrypting data..." && progressFraction > 0.0 && progressFraction < 1.0) {
+        // progressFraction >= 0 means a determinate percentage is available.
+        if (progressFraction >= 0 && progressFraction < 1.0) {
             return progressStage + " " + Math.round(progressFraction * 100) + "%"
         }
         return progressStage
@@ -42,8 +62,14 @@ Page {
     }
 
     function performCreate() {
+        var dirPath = toDirPath(initialDestDir)
+        var filename = filenameField.text.trim() !== ""
+                       ? filenameField.text.trim()
+                       : controller.defaultContainerName(dirPath)
+        var fullPath = dirPath + "/" + filename
+
         var error = controller.createContainer(
-            initialDestDir,
+            fullPath,
             collectFiles(),
             passwordField.text,
             sizeSpin.value,
@@ -54,11 +80,16 @@ Page {
             cipherCombo.currentIndex
         )
 
+        // Password is consumed synchronously by securePasswordFromQString — clear immediately.
+        passwordField.text = ""
+        confirmPasswordField.text = ""
+
         showCreateError(error)
     }
 
     // KDF profile definitions: [label, description, m_mib, t, p]
-    // Index corresponds to kdfProfileIndex passed to controller (0=Standard, 1=Fast, 2=High, 3=Browser, 4=Custom)
+    // Index mapping MUST match profileFromIndex() in ScefController.cpp:
+    //   0=Standard, 1=Fast, 2=High, 3=Browser, 4=Custom (None)
     readonly property var kdfProfiles: [
         { label: "Standard (recommended)", desc: "Default profile (1024 MiB, t=1, p=4, ~0.6-1.1s)",                    m: 1024, t: 1, p: 4 },
         { label: "Fast",                   desc: "Quick access, weaker hardware (256 MiB, t=1, p=4, ~0.1-0.3s)",        m: 256,  t: 1, p: 4 },
@@ -118,13 +149,79 @@ Page {
             color: Material.color(Material.Amber)
         }
 
-        // Destination path display
+        // Destination directory display
         Label {
-            text: "Destination: " + decodeURIComponent(
-                initialDestDir.replace(/^file:\/\/\//, "").replace(/^file:\/\//, ""))
+            text: "Destination: " + toDisplayPath(initialDestDir)
             font.pixelSize: 12
             opacity: 0.6
             visible: initialDestDir !== ""
+        }
+
+        // Filename input
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            visible: initialDestDir !== ""
+
+            Label {
+                text: "Filename:"
+                Layout.preferredWidth: 80
+            }
+
+            TextField {
+                id: filenameField
+                Layout.fillWidth: true
+                placeholderText: "container.scef"
+                // Validate: non-empty after trim, no path separators.
+                property bool filenameValid: {
+                    var t = text.trim()
+                    return t.length > 0 && t.indexOf("/") === -1 && t.indexOf("\\") === -1
+                }
+
+                onTextChanged: {
+                    filenameErrorLabel.visible = text.trim().length > 0 && !filenameValid
+                }
+
+                onEditingFinished: {
+                    // Fall back to default name if user clears the field.
+                    if (text.trim() === "" && initialDestDir !== "") {
+                        text = controller.defaultContainerName(toDirPath(initialDestDir))
+                    }
+                }
+            }
+
+            Label {
+                text: "✔"
+                color: Material.color(Material.LightGreen)
+                font.pixelSize: 18
+                Layout.preferredWidth: 18
+                opacity: filenameField.text.trim() !== "" && filenameField.filenameValid ? 1 : 0
+            }
+        }
+
+        // Filename validation error
+        Label {
+            id: filenameErrorLabel
+            text: "Filename must not contain '/' or '\\' and must not be empty."
+            color: "red"
+            font.pixelSize: 11
+            visible: false
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+
+        // Refresh default filename when destination directory changes.
+        Connections {
+            target: createPageRoot
+            function onInitialDestDirChanged() {
+                if (initialDestDir !== "") {
+                    filenameField.text = controller.defaultContainerName(
+                        toDirPath(initialDestDir))
+                } else {
+                    filenameField.text = ""
+                }
+                filenameErrorLabel.visible = false
+            }
         }
 
         // Files to encrypt
@@ -433,6 +530,7 @@ Page {
             Button {
                 text: "Create"
                 enabled: initialDestDir !== ""
+                         && filenameField.filenameValid
                          && fileListModelLocal.count > 0
                          && passwordField.text !== ""
                          && passwordField.text === confirmPasswordField.text
@@ -457,6 +555,7 @@ Page {
 
             Button {
                 text: "Back"
+                enabled: !controller.busy
                 onClicked: stackView.pop()
             }
 
