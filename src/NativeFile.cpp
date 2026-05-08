@@ -240,6 +240,11 @@ NativeFile& NativeFile::operator=(NativeFile&& other) noexcept {
 #include <sys/stat.h>
 #include <unistd.h>
 
+NativeFile::NativeFile()
+{
+    LOG_INFO("NativeFile::NativeFile()");
+}
+
 void NativeFile::open(const std::string& path, OpenMode mode) {
     close();
 
