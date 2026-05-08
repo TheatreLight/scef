@@ -22,6 +22,7 @@ Create a new container and encrypt files into it.
 
 ```
 scef create -c <container_dir> -f <file> [-f <file> ...] -s <size_bytes>
+            [--name <filename>]
             [--max_table_size <bytes>]
             [--kdf-profile <name> | --kdf-m <MiB> --kdf-t <n> --kdf-p <n>]
 ```
@@ -30,7 +31,7 @@ scef create -c <container_dir> -f <file> [-f <file> ...] -s <size_bytes>
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `-c <dir>` | path | Directory where `container.scef` will be created |
+| `-c <dir>` | path | Directory where the container will be created |
 | `-f <file>` | path | File to include; repeatable for multiple files |
 | `-s <bytes>` | uint64 | Total container size in bytes |
 
@@ -38,6 +39,7 @@ scef create -c <container_dir> -f <file> [-f <file> ...] -s <size_bytes>
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--name <filename>` | auto-numbered | Container filename. Default: `container.scef` if absent, otherwise `container_1.scef`, `container_2.scef`, … (auto-numbered to avoid collisions). Filename must not contain `/` or `\`. |
 | `--max_table_size <bytes>` | 65536 | Reserved bytes per slot for the encrypted file table |
 | `--kdf-profile <name>` | `default` | Use a predefined KDF profile: `fast`, `default`, `high`, `browser` |
 | `--kdf-m <MiB>` | — | Manual Argon2id memory in MiB (1–4096; below 8 prints a warning) |
@@ -68,12 +70,13 @@ echo "s3cr3t" | scef create -c /mnt/usb -f report.pdf -f data.zip -s 104857600 -
 Add one or more files to an existing container.
 
 ```
-scef add -c <container_dir> -f <file> [-f <file> ...]
+scef add -c <container_dir> [--name <filename>] -f <file> [-f <file> ...]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `-c <dir>` | Container directory containing `container.scef` |
+| `-c <dir>` | Container directory |
+| `--name <filename>` | Container filename. Default: `container.scef`. If that file is absent and exactly one `*.scef` file exists in the directory, it is used as a fallback. Otherwise the command fails. |
 | `-f <file>` | File to add (repeatable) |
 
 **Sequence:**
@@ -92,12 +95,13 @@ echo "s3cr3t" | scef add -c /mnt/usb -f newfile.docx
 List files stored in a container.
 
 ```
-scef list -c <container_dir>
+scef list -c <container_dir> [--name <filename>]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-c <dir>` | Container directory |
+| `--name <filename>` | Container filename. Default: `container.scef`. If that file is absent and exactly one `*.scef` file exists in the directory, it is used as a fallback. Otherwise the command fails. |
 
 Prints a text table with filename and size. No `-f` flag needed — always lists all files.
 
@@ -125,13 +129,14 @@ file_count: 2
 Decrypt and extract files from a container.
 
 ```
-scef extract -c <container_dir> -o <output_dir> [-f <file> ...]
+scef extract -c <container_dir> -o <output_dir> [--name <filename>] [-f <file> ...]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-c <dir>` | Container directory |
 | `-o <dir>` | Output directory for extracted files |
+| `--name <filename>` | Container filename. Default: `container.scef`. If that file is absent and exactly one `*.scef` file exists in the directory, it is used as a fallback. Otherwise the command fails. |
 | `-f <file>` | Specific file name to extract (optional, repeatable); omit to extract all |
 
 Path traversal protection: file names from the container are sanitized with `std::filesystem::path::filename()`. Names that resolve to `.` or `..` throw an error.
