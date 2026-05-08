@@ -1,4 +1,5 @@
 #include "ScefController.h"
+#include "ContainerName.h"
 #include "FileManager.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
@@ -351,6 +352,12 @@ QString ScefController::defaultContainerName(const QString& dir) const
 {
     const std::string fullPath = nextAvailableContainerPath(dir.toStdString());
     return QString::fromStdString(std::filesystem::path(fullPath).filename().string());
+}
+
+QString ScefController::validateContainerName(const QString& name) const
+{
+    const std::string err = scef::validateContainerName(name.toStdString());
+    return QString::fromStdString(err);
 }
 
 QStringList ScefController::containerFilesAtRow(int row) const

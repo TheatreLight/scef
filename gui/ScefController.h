@@ -68,6 +68,10 @@ public:
     // Returns a list of absolute paths to *.scef files in the drive root at the given row.
     Q_INVOKABLE QStringList containerFilesAtRow(int row) const;
 
+    // Validate a proposed container filename.
+    // Returns empty string on success; returns a human-readable error message on failure.
+    Q_INVOKABLE QString validateContainerName(const QString& name) const;
+
     FileListModel* fileListModel() const;
     DriveListModel* driveListModel() const;
     bool isContainerOpen() const;

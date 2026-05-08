@@ -173,13 +173,23 @@ Page {
                 id: filenameField
                 Layout.fillWidth: true
                 placeholderText: "container.scef"
-                // Validate: non-empty after trim, no path separators.
+                // Validate via the library validator (shared with CLI).
+                // filenameValid is true when the name is non-empty and passes all checks.
                 property bool filenameValid: {
                     var t = text.trim()
-                    return t.length > 0 && t.indexOf("/") === -1 && t.indexOf("\\") === -1
+                    if (t.length === 0) return false
+                    return controller.validateContainerName(t) === ""
+                }
+
+                // validationError holds the message to show when !filenameValid.
+                property string validationError: {
+                    var t = text.trim()
+                    if (t.length === 0) return ""
+                    return controller.validateContainerName(t)
                 }
 
                 onTextChanged: {
+                    filenameErrorLabel.text = validationError
                     filenameErrorLabel.visible = text.trim().length > 0 && !filenameValid
                 }
 
@@ -200,10 +210,10 @@ Page {
             }
         }
 
-        // Filename validation error
+        // Filename validation error — text is filled dynamically from the C++ validator.
         Label {
             id: filenameErrorLabel
-            text: "Filename must not contain '/' or '\\' and must not be empty."
+            text: ""
             color: "red"
             font.pixelSize: 11
             visible: false
