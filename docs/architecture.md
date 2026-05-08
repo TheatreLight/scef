@@ -37,12 +37,12 @@ All targets are defined in `CMakeLists.txt`.
 
 | Target | Type | Enabled by | Source files |
 |--------|------|-----------|-------------|
-| `scef_lib` | Static library | Always | `src/Header.cpp`, `src/CryptoManager.cpp`, `src/FileManager.cpp`, `src/FileTable.cpp`, `src/KdfProfiles.cpp`, `src/Logger.cpp` |
+| `scef_lib` | Static library | Always | `src/Header.cpp`, `src/CryptoManager.cpp`, `src/FileManager.cpp`, `src/FileTable.cpp`, `src/KdfProfiles.cpp`, `src/Logger.cpp`, `src/EncryptPipeline.cpp`, `src/DecryptPipeline.cpp`, `src/NativeFile.cpp`, `src/BenchMeasurerGuard.cpp`, `src/PasswordStrengthEstimator.cpp` |
 | `scef` | Executable | Always | `src/main.cpp` |
-| `scef_unit_tests` | Executable | `SCEF_BUILD_TESTS=ON` (default) | `tests/unit/test_scef.cpp` |
+| `scef_unit_tests` | Executable | `SCEF_BUILD_TESTS=ON` (default) | `tests/unit/test_scef.cpp`, `tests/unit/test_native_file.cpp`, `tests/unit/test_password_strength.cpp` |
 | `scef-gui` | Executable | `SCEF_BUILD_GUI=ON` | `gui/main.cpp`, `gui/ScefController.cpp`, `gui/FileListModel.cpp`, `gui/DriveListModel.cpp`, `gui/qml/*.qml` |
 | `generate_vectors` | Executable | `SCEF_BUILD_BROWSER_TESTS=ON` | `browser/test/generate_vectors.cpp` |
-| `bench_kdf` | Executable | `SCEF_BUILD_BENCHMARKS=ON` | `benchmarks/bench_kdf.cpp` |
+| `bench_kdf` | Executable | Always | `benchmarks/bench_kdf.cpp` |
 
 ### Build Configurations
 
@@ -58,7 +58,6 @@ scef/build/gui      — CLI + GUI (CMake, -DSCEF_BUILD_GUI=ON)
 | `SCEF_BUILD_TESTS` | `ON` | Build `scef_unit_tests` with GTest |
 | `SCEF_BUILD_GUI` | `OFF` | Build `scef-gui` (requires Qt 6.5+) |
 | `SCEF_BUILD_BROWSER_TESTS` | `OFF` | Build `generate_vectors` |
-| `SCEF_BUILD_BENCHMARKS` | `OFF` | Build KDF benchmark |
 
 ### Dependencies
 
@@ -105,6 +104,7 @@ scef/
 │       ├── StartPage.qml   — drive list, create/open entry points
 │       ├── CreatePage.qml  — file selection, password, KDF settings
 │       ├── FileListPage.qml— file list with add/extract actions
+│       ├── LogsPage.qml    — browse and view log files
 │       ├── PasswordDialog.qml — reusable modal password dialog
 │       └── utils.js        — formatSize() helper
 ├── browser/                — HTML+JS browser viewer (no build needed)
@@ -153,11 +153,12 @@ classDiagram
     class FileManager {
         +init(filesList, pathToDir, containerSize, maxTableSize, createNew, password)
         +setKdfParams(profile, m_kib, t, p)
+        +setCipher(c)
+        +setProgressCallback(cb)
         +write()
         +add()
         +readMeta()
         +extract(outputFolder)
-        +printHeader()
         +printFilesTable()
         +getFilesTable() vector~FileEntry~
         +setFilesList(filesList)
@@ -168,8 +169,8 @@ classDiagram
         -verifyHeaderHmac()
         -writeAllSlots()
         -writeFileTableToAllSlots()
-        -writeFragmented(data, size)
-        -readFragmented(buf, size)
+        -writeFragmented(offset, data, size)
+        -readFragmented(offset, buf, size)
         -skipSlots(pos) uint64
         -bytesUntilNextSlot(cur, remaining) size_t
     }
@@ -203,8 +204,6 @@ classDiagram
         +addFileEntry(path, checksum, offset, size)
         +serialize() string
         +deserialize(data)
-        +updateChecksum(chunk, size)
-        +getChecksum() string
         +getFilesTable() vector~FileEntry~
         +getNextWriteOffset() uint64
         +setNextWriteOffset(offset)

@@ -8,7 +8,7 @@ Binary: `scef` (built from `src/main.cpp`)
 scef <command> [options]
 ```
 
-Password is always read from **stdin** (first line, up to newline or EOF). The binary does not provide a `--password` flag — pass the password via pipe or interactive input.
+Password is always read from **stdin** (first line, up to newline or EOF). Use pipe or interactive input in production.
 
 ```
 echo "mypassword" | scef create -c /path/to/dir -f file.txt -s 10485760
@@ -155,28 +155,20 @@ echo "s3cr3t" | scef extract -c /mnt/usb -o /tmp/output -f report.pdf
 Measure Argon2id timing for all KDF profiles on the current machine.
 
 ```
-scef benchmark [--kdf-m <MiB>] [--kdf-t <n>] [--kdf-p <n>] [--csv] [--runs <n>]
+scef benchmark
 ```
 
-Does not require a password or a container.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--kdf-m <MiB>` | — | Add a custom memory config |
-| `--kdf-t <n>` | 1 | Custom iterations |
-| `--kdf-p <n>` | 4 | Custom parallelism |
-| `--csv` | — | Output in CSV format |
-| `--runs <n>` | 3 | Runs per config (median reported) |
+Does not require a password or a container. Takes no arguments. Runs all 4 built-in profiles once each and prints elapsed seconds.
 
 **Example output:**
 
 ```
 Profile          m (MiB)   t   p    Time
 ------------------------------------------
-fast                  19   2   1    0.3s
-default               64   3   4    1.1s
-high                 256   5   8    6.2s
-browser               46   1   1    0.8s
+browser               64   1   1    0.1s
+fast                 256   1   4    0.3s
+default             1024   1   4    0.9s
+high                2048   1   4    1.7s
 ```
 
 ---
@@ -187,6 +179,39 @@ browser               46   1   1    0.8s
 |------|-------------|
 | `--help`, `-h` | Show help and exit |
 | `--version` | Print version string and exit |
+| `--log-level <level>` | Set minimum log level: `debug`, `info`, `bench`, `warning`, `error`. Default: `info` (Release) or `debug` (Debug build). |
+| `-y`, `--yes` | Assume yes for all confirmation prompts (e.g., weak password warning). |
+| `--strength-only` | Read password from stdin, print score/bits, exit without performing any container operation. Can be combined with `--kdf-profile` to check against a specific profile's threshold. |
+| `--password <string>` | **Scripting/testing only.** Pass the password directly on the command line. **The password is visible in process listings and shell history.** Do not use in production; prefer stdin. |
+
+### `--strength-only` mode
+
+`--strength-only` can appear anywhere in the argument list. When present, the binary reads the password from stdin and prints a one-line result:
+
+```
+score=3 bits=41.2
+```
+
+`score` is 0–4 (0 = very weak, 4 = very strong). `bits` is `log2(guesses)`. Exit code is always 0 on success.
+
+Combined with `--kdf-profile` to check against a specific profile's strength threshold:
+
+```sh
+echo "mypassword" | scef --strength-only --kdf-profile high
+```
+
+### Cipher Selection (`--cipher`)
+
+Available at create time only:
+
+| Value | Cipher |
+|-------|--------|
+| `aes`, `aes-256-gcm` | AES-256-GCM (default) |
+| `kuznechik`, `kuznyechik`, `gost` | Kuznechik-GCM (native CLI and GUI only) |
+
+```sh
+echo "s3cr3t" | scef create -c /mnt/usb -f file.bin -s 104857600 --cipher kuznechik
+```
 
 ---
 

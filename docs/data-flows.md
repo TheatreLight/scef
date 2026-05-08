@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart TD
-    PW["User password (std::string)"]
+    PW["User password (Botan::secure_vector~char~)"]
     SALT["32-byte random salt\n(CryptoManager::generateSalt)"]
     ARGON["Argon2id KDF\n(Botan::PasswordHashFamily)\nm_kib, t, p from header"]
     KEK["32-byte KEK\nkey-encryption key\nkek_ in CryptoManager"]
@@ -43,15 +43,15 @@ Source: `src/FileManager.cpp:643-670`
 
 ### writeChunks detail
 
-For each file:
-1. Open source file for reading.
-2. `fileTable_.resetChecksum()`.
-3. Read up to `BLOCK_SIZE` bytes at a time.
-4. `fileTable_.updateChecksum(chunk)` — feeds SHA-256 hasher.
-5. `crypto_->encrypt(chunk, encBuf, chunkSize)` — writes `[nonce 12B][ciphertext][tag 16B]`.
-6. `writeFragmented(encBuf)` — writes to container, skipping slot areas.
-7. After all chunks: `fileTable_.getChecksum()` — hex SHA-256 of plaintext.
-8. `fileTable_.addFileEntry(path, checksum, startOffset, actualSize)`.
+File encryption is delegated to `EncryptPipeline`, a multi-stage pipeline with reader, worker, and writer threads. `EncryptPipeline`:
+
+1. Reads source file in `BLOCK_SIZE` chunks (reader thread).
+2. Encrypts each chunk with AES-256-GCM using a fresh random nonce (worker thread). Output layout: `[nonce 12B][ciphertext][auth tag 16B]`.
+3. Writes encrypted chunks to the container via `FragmentedIO`, automatically skipping slot reserved areas (writer thread).
+4. Computes SHA-256 of the plaintext data incrementally across all chunks.
+5. After all chunks: calls `fileTable_.addFileEntry(path, checksum, startOffset, actualSize)` with the completed hex SHA-256.
+
+The `FileTable` does not perform incremental hashing; it only stores the final checksum provided by `EncryptPipeline`.
 
 ---
 
@@ -147,7 +147,7 @@ flowchart TD
     D["crypto_->encrypt(jsonStr) → encTable\nheader_.setFileTableSize(encSize)"]
     E["computeAndStoreHeaderHmac()\nheader_.serialize()\nHMAC(bytes[0..0x9F]) → header_.storeHmac"]
     F["For i in 0..3:\n  writeHeaderAt(slotOffsets_[i])\n  writeFileTableAt(slotOffsets_[i], encTable)"]
-    G["containerStream_->flush()"]
+    G["containerFile_.syncToDevice()"]
 
     A --> B --> C --> D --> E --> F --> G
 ```

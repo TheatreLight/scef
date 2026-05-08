@@ -178,7 +178,7 @@ bytesUntilNextSlot(cur, remaining):
 
 ## Crash Resilience
 
-All 4 slots are kept identical. On write (`writeFileTableToAllSlots`), the header is written to all 4 slots sequentially with `flush()` between them.
+All 4 slots are kept identical. On write (`writeFileTableToAllSlots`), the header is written to all 4 slots sequentially with `syncToDevice()` (a `NativeFile` method) between them.
 
 On open (`readMeta`), the algorithm (`src/FileManager.cpp:417-582`):
 
