@@ -18,8 +18,7 @@ Page {
         if (progressStage === "") {
             return "Opening container..."
         }
-        if ((progressStage === "Encrypting data..." || progressStage === "Decrypting data...")
-                && progressFraction > 0.0 && progressFraction < 1.0) {
+        if (progressFraction >= 0.0 && progressFraction < 1.0) {
             return progressStage + " " + Math.round(progressFraction * 100) + "%"
         }
         return progressStage
@@ -147,6 +146,85 @@ Page {
         }
     }
 
+    // Model backing the container picker dialog
+    ListModel {
+        id: containerPickerModel
+    }
+
+    // Multi-container picker: shown when the selected drive has more than one *.scef file.
+    Dialog {
+        id: containerPickerDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Select Container"
+        standardButtons: Dialog.Cancel
+        width: 360
+
+        // Track which item the user has highlighted
+        property string selectedPath: ""
+
+        onOpened: {
+            selectedPath = ""
+            containerPickerList.currentIndex = -1
+        }
+
+        onRejected: {
+            selectedPath = ""
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+
+            Label {
+                text: "Multiple containers found. Select one to open:"
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+                opacity: 0.8
+            }
+
+            ListView {
+                id: containerPickerList
+                Layout.fillWidth: true
+                implicitHeight: Math.min(contentHeight, 240)
+                clip: true
+                model: containerPickerModel
+
+                delegate: ItemDelegate {
+                    width: containerPickerList.width
+                    highlighted: index === containerPickerList.currentIndex
+                    text: model.filename
+
+                    onClicked: {
+                        containerPickerList.currentIndex = index
+                        containerPickerDialog.selectedPath = model.fullPath
+                    }
+
+                    onDoubleClicked: {
+                        containerPickerList.currentIndex = index
+                        containerPickerDialog.selectedPath = model.fullPath
+                        containerPickerDialog.close()
+                        passwordDialog.containerPath = containerPickerDialog.selectedPath
+                        passwordDialog.open()
+                    }
+                }
+            }
+
+            Button {
+                text: "Open"
+                Layout.alignment: Qt.AlignRight
+                enabled: containerPickerDialog.selectedPath !== ""
+                Material.accent: Material.LightGreen
+                highlighted: true
+                onClicked: {
+                    var path = containerPickerDialog.selectedPath
+                    containerPickerDialog.close()
+                    passwordDialog.containerPath = path
+                    passwordDialog.open()
+                }
+            }
+        }
+    }
+
     StackView.onStatusChanged: {
         if (StackView.status === StackView.Active) {
             errorLabel.visible = false
@@ -270,13 +348,23 @@ Page {
             Button {
                 text: "Open from Drive"
                 font.pixelSize: 14
-                enabled: selectedDriveIndex >= 0 && driveListRevision >= 0
+                enabled: selectedDriveIndex >= 0
                          && controller.driveListModel.hasContainerAtRow(selectedDriveIndex)
                 onClicked: {
                     errorLabel.visible = false
                     var drivePath = controller.driveListModel.pathAtRow(selectedDriveIndex)
-                    passwordDialog.containerPath = "file:///" + drivePath + "container.scef"
-                    passwordDialog.open()
+                    var files = controller.containerFilesAtRow(selectedDriveIndex)
+                    if (files.length === 1) {
+                        passwordDialog.containerPath = drivePath + files[0]
+                        passwordDialog.open()
+                    } else if (files.length > 1) {
+                        containerPickerModel.clear()
+                        for (var i = 0; i < files.length; i++) {
+                            containerPickerModel.append({ "filename": files[i], "fullPath": drivePath + files[i] })
+                        }
+                        containerPickerDialog.open()
+                    }
+                    // files.length === 0 cannot happen: button is only enabled when hasContainerAtRow is true
                 }
             }
         }
