@@ -2,16 +2,18 @@
 #define DRIVE_LIST_MODEL_H
 
 #include <QAbstractListModel>
+#include <QStringList>
 
 #include <string>
 #include <vector>
 
 struct DriveEntry {
-    std::string letter;     // "E:\"
-    std::string label;      // "KINGSTON"
-    uint64_t freeSpace;     // bytes
-    uint64_t totalSpace;    // bytes
-    bool hasContainer;      // container.scef exists
+    std::string letter;          // "E:\" on Windows, "/media/user/USB" on Linux
+    std::string label;           // "KINGSTON"
+    uint64_t freeSpace;          // bytes
+    uint64_t totalSpace;         // bytes
+    bool hasContainer;           // at least one *.scef present (derived from containerFiles)
+    QStringList containerFiles;  // filenames (not full paths) of *.scef files in drive root
 };
 
 class DriveListModel : public QAbstractListModel {
@@ -36,6 +38,7 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE QString pathAtRow(int row) const;
     Q_INVOKABLE bool hasContainerAtRow(int row) const;
+    Q_INVOKABLE QStringList containerFilesAtRow(int row) const;
 
 signals:
     void countChanged();
