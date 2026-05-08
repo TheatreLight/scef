@@ -11,7 +11,7 @@ Page {
     property string pendingOperation: ""  // "add" or "extract"
     property string pendingMessage: ""
     property string progressStage: ""
-    property real progressFraction: 0.0
+    property real progressFraction: -1.0
 
     property var selectedIndices: ({})
 
@@ -21,8 +21,10 @@ Page {
             if (pendingOperation === "add") return "Preparing to add files..."
             return "Processing..."
         }
-        if ((progressStage === "Encrypting data..." || progressStage === "Decrypting data...")
-                && progressFraction > 0.0 && progressFraction < 1.0) {
+        // Per ScefController: fraction == -1.0 (or any negative value) signals
+        // "indeterminate" — only show a percentage when the controller emitted
+        // a real fraction in [0, 1).
+        if (progressFraction >= 0.0 && progressFraction < 1.0) {
             return progressStage + " " + Math.round(progressFraction * 100) + "%"
         }
         return progressStage
@@ -60,7 +62,7 @@ Page {
             pendingOperation = "add"
             pendingMessage = files.length + " file(s) added successfully"
             progressStage = ""
-            progressFraction = 0.0
+            progressFraction = -1.0
             var error = controller.addFiles(files)
             if (error !== "") {
                 errorLabel.text = error
@@ -82,7 +84,7 @@ Page {
                 ? names.length + " file(s) extracted successfully"
                 : "All files extracted successfully"
             progressStage = ""
-            progressFraction = 0.0
+            progressFraction = -1.0
             var error = controller.extractFiles(names, selectedFolder)
             if (error !== "") {
                 errorLabel.text = error

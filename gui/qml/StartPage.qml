@@ -355,12 +355,12 @@ Page {
                     var drivePath = controller.driveListModel.pathAtRow(selectedDriveIndex)
                     var files = controller.containerFilesAtRow(selectedDriveIndex)
                     if (files.length === 1) {
-                        passwordDialog.containerPath = drivePath + files[0]
+                        passwordDialog.containerPath = Utils.joinPath(drivePath, files[0])
                         passwordDialog.open()
                     } else if (files.length > 1) {
                         containerPickerModel.clear()
                         for (var i = 0; i < files.length; i++) {
-                            containerPickerModel.append({ "filename": files[i], "fullPath": drivePath + files[i] })
+                            containerPickerModel.append({ "filename": files[i], "fullPath": Utils.joinPath(drivePath, files[i]) })
                         }
                         containerPickerDialog.open()
                     }

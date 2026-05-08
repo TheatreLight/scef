@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import "utils.js" as Utils
 
 Page {
     id: createPageRoot
@@ -66,7 +67,7 @@ Page {
         var filename = filenameField.text.trim() !== ""
                        ? filenameField.text.trim()
                        : controller.defaultContainerName(dirPath)
-        var fullPath = dirPath + "/" + filename
+        var fullPath = Utils.joinPath(dirPath, filename)
 
         var error = controller.createContainer(
             fullPath,
