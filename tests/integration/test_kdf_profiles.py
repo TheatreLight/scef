@@ -1,6 +1,12 @@
 """
 test_kdf_profiles.py — Integration tests for KDF CLI flags.
 
+Additional spec-compliance tests (F-5):
+- TestKdfProfileBinaryVerification: for each named profile, verifies that the
+  KDF parameter bytes written into the container header match the spec table.
+  Reads raw bytes at offsets 0x000E (profile_id), 0x0010 (m_kib), 0x0014 (t),
+  0x0018 (p) and asserts against the documented profile values.
+
 Verified behaviors
 ------------------
 - Default (no KDF flags): container opens and files can be listed.
@@ -26,6 +32,7 @@ t=5, p=8, ~6s) is tested once because it must be covered; it is not reused.
 """
 
 import pathlib
+import struct
 import subprocess
 
 import pytest
@@ -61,21 +68,6 @@ def _run_raw(args: list, stdin_text: str = "\n", timeout: int = 30) -> subproces
         text=True,
         timeout=timeout,
     )
-
-
-def _create_with_kdf_profile(
-    container_dir: pathlib.Path,
-    files: list,
-    profile: str,
-    password: str = DEFAULT_PASSWORD,
-    size: int = DEFAULT_CONTAINER_SIZE,
-) -> subprocess.CompletedProcess:
-    """Run 'scef create ... --kdf-profile <profile>'."""
-    args = ["create", "-c", str(container_dir)]
-    for f in files:
-        args += ["-f", str(f)]
-    args += ["-s", str(size), "--kdf-profile", profile]
-    return run_scef(args, password=password)
 
 
 def _create_with_custom_kdf(
@@ -729,3 +721,145 @@ class TestCrossProfileOpen:
             f"stderr: {result_b.stderr.strip()}"
         )
         assert "b.txt" in result_b.stdout
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Binary verification of KDF parameter bytes in header (F-5)
+# ---------------------------------------------------------------------------
+#
+# Spec (container-format.md, Header.h binary layout):
+#   0x000E  uint16_le  kdf_profile_id
+#   0x0010  uint32_le  kdf_m_kib
+#   0x0014  uint32_le  kdf_t
+#   0x0018  uint32_le  kdf_p
+#
+# Profile table (KdfProfiles.cpp):
+#   browser:  id=1, m_kib=65536,   t=1, p=1
+#   fast:     id=2, m_kib=262144,  t=1, p=4
+#   standard: id=3, m_kib=1048576, t=1, p=4
+#   high:     id=4, m_kib=2097152, t=1, p=4
+#
+# These tests verify that setKdfParams() actually serializes the correct values
+# into the header binary.  A profile selector that stored wrong values but still
+# used the stored value on open would pass all functional round-trip tests while
+# silently violating the spec.
+# ---------------------------------------------------------------------------
+
+# Spec table: profile_name -> (profile_id, m_kib, t, p)
+_PROFILE_SPEC = {
+    "browser":  (1,       65536, 1, 1),
+    "fast":     (2,      262144, 1, 4),
+    "default":  (3,     1048576, 1, 4),
+    "high":     (4,     2097152, 1, 4),
+}
+
+
+class TestKdfProfileBinaryVerification:
+    """
+    For each named profile, create a container and read KDF parameter bytes
+    directly from the container binary.  Assert they match the spec table.
+
+    These tests are intentionally spec-anchored: they will FAIL if the
+    implementation stores wrong values in the header, even if the functional
+    round-trip still works (because the stored-and-reread value is consistently
+    wrong on both write and read paths).
+    """
+
+    @pytest.mark.parametrize("profile,expected", [
+        ("browser",  _PROFILE_SPEC["browser"]),
+        ("fast",     _PROFILE_SPEC["fast"]),
+        ("default",  _PROFILE_SPEC["default"]),
+    ])
+    def test_kdf_profile_binary_header_fields(self, tmp_path, profile, expected):
+        """
+        Create a container with --kdf-profile <profile>, read the first 256 bytes
+        of the container file, and assert that the KDF parameter fields at their
+        documented binary offsets match the spec table values.
+
+        Offsets and types (all little-endian):
+          0x000E  uint16  kdf_profile_id
+          0x0010  uint32  kdf_m_kib
+          0x0014  uint32  kdf_t
+          0x0018  uint32  kdf_p
+        """
+        exp_id, exp_m_kib, exp_t, exp_p = expected
+
+        src = make_text_file(tmp_path / "f.txt", f"binary verify {profile}\n")
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+
+        _create_with_kdf_profile(cdir, [src], profile)
+
+        container_path = cdir / "container.scef"
+        raw = container_path.read_bytes()[:0x100]  # first 256 bytes covers all KDF fields
+
+        profile_id = struct.unpack_from("<H", raw, 0x000E)[0]
+        m_kib      = struct.unpack_from("<I", raw, 0x0010)[0]
+        t          = struct.unpack_from("<I", raw, 0x0014)[0]
+        p          = struct.unpack_from("<I", raw, 0x0018)[0]
+
+        assert profile_id == exp_id, (
+            f"Profile '{profile}': kdf_profile_id at 0x000E should be {exp_id}, "
+            f"got {profile_id}"
+        )
+        assert m_kib == exp_m_kib, (
+            f"Profile '{profile}': kdf_m_kib at 0x0010 should be {exp_m_kib} KiB "
+            f"({exp_m_kib // 1024} MiB), got {m_kib}"
+        )
+        assert t == exp_t, (
+            f"Profile '{profile}': kdf_t at 0x0014 should be {exp_t}, got {t}"
+        )
+        assert p == exp_p, (
+            f"Profile '{profile}': kdf_p at 0x0018 should be {exp_p}, got {p}"
+        )
+
+    def test_high_profile_binary_header_fields(self, tmp_path):
+        """
+        'high' profile binary verification — separated because it is slow (~6s).
+        Verifies: id=4, m_kib=2097152 (2 GiB), t=1, p=4.
+        """
+        exp_id, exp_m_kib, exp_t, exp_p = _PROFILE_SPEC["high"]
+
+        src = make_text_file(tmp_path / "f.txt", "binary verify high\n")
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+
+        _create_with_kdf_profile(cdir, [src], "high", timeout=120)
+
+        container_path = cdir / "container.scef"
+        raw = container_path.read_bytes()[:0x100]
+
+        profile_id = struct.unpack_from("<H", raw, 0x000E)[0]
+        m_kib      = struct.unpack_from("<I", raw, 0x0010)[0]
+        t          = struct.unpack_from("<I", raw, 0x0014)[0]
+        p          = struct.unpack_from("<I", raw, 0x0018)[0]
+
+        assert profile_id == exp_id, (
+            f"high profile: kdf_profile_id should be {exp_id}, got {profile_id}"
+        )
+        assert m_kib == exp_m_kib, (
+            f"high profile: kdf_m_kib should be {exp_m_kib}, got {m_kib}"
+        )
+        assert t == exp_t, (
+            f"high profile: kdf_t should be {exp_t}, got {t}"
+        )
+        assert p == exp_p, (
+            f"high profile: kdf_p should be {exp_p}, got {p}"
+        )
+
+    def test_magic_bytes_at_offset_0x0000(self, tmp_path):
+        """
+        Sanity check: the SCEF magic 'SCEF' must be at offset 0x0000 in the header.
+        This confirms the container was created and we are reading the right region.
+        """
+        src = make_text_file(tmp_path / "f.txt", "magic check\n")
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+
+        _create_with_kdf_profile(cdir, [src], "fast")
+
+        raw = (cdir / "container.scef").read_bytes()[:0x100]
+        magic = raw[0x0000:0x0004]
+        assert magic == b"SCEF", (
+            f"Header magic at 0x0000 should be b'SCEF', got {magic!r}"
+        )
