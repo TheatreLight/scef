@@ -2,6 +2,7 @@
 #include "FileManager.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
+#include "PasswordStrengthEstimator.h"
 #include "enums/ECiphers.h"
 
 #include <QCoreApplication>
@@ -15,9 +16,11 @@
 #include <QUrl>
 #include <QVariantMap>
 
+#include <botan/mem_ops.h>
 #include <botan/secmem.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -41,10 +44,16 @@ std::vector<std::string> toStdPaths(const QStringList& list)
     return result;
 }
 
+// Convert a Qt password string to a Botan secure buffer.
+// QByteArray is COW — the scrub below is best-effort; it zeroes the current
+// backing store before QByteArray's internal bookkeeping releases it.
 Botan::secure_vector<char> securePasswordFromQString(const QString& password)
 {
-    const QByteArray utf8 = password.toUtf8();
-    return Botan::secure_vector<char>(utf8.constData(), utf8.constData() + utf8.size());
+    QByteArray utf8 = password.toUtf8();
+    Botan::secure_vector<char> result(utf8.constData(), utf8.constData() + utf8.size());
+    Botan::secure_scrub_memory(const_cast<char*>(utf8.constData()),
+                               static_cast<size_t>(utf8.size()));
+    return result;
 }
 
 EKDFProfile profileFromIndex(int kdfProfileIndex)
@@ -86,6 +95,20 @@ QString progressStageLabel(FileManager::ProgressStage stage)
     return {};
 }
 
+// Returns -1.0 for stages where a determinate fraction is not meaningful
+// (no byte-level progress counter exists). QML should hide the percent display
+// when fraction < 0.
+double stageFractionFromCallback(FileManager::ProgressStage stage, double fraction)
+{
+    switch (stage) {
+        case FileManager::ProgressStage::EncryptingData:
+        case FileManager::ProgressStage::DecryptingData:
+            return std::clamp(fraction, 0.0, 1.0);
+        default:
+            return -1.0;
+    }
+}
+
 } // namespace
 
 ScefController::ScefController(QObject* parent)
@@ -97,7 +120,11 @@ ScefController::ScefController(QObject* parent)
 
 ScefController::~ScefController() = default;
 
-QString ScefController::createContainer(const QString& destDir,
+// containerFilePath: full path to the new container file (directory + filename).
+// QML is responsible for constructing the path, e.g.:
+//   dir + "/" + controller.defaultContainerName(dir)
+// All heavy work (init, setCipher, setKdfParams, write) runs on a background thread.
+QString ScefController::createContainer(const QString& containerFilePath,
                                          const QStringList& files,
                                          const QString& password,
                                          quint64 sizeMB,
@@ -109,15 +136,13 @@ QString ScefController::createContainer(const QString& destDir,
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
-    auto paths = toStdPaths(files);
-    auto dir = toLocalPath(destDir);
-    auto pwd = securePasswordFromQString(password);
+    auto paths       = toStdPaths(files);
+    auto filePath    = toLocalPath(containerFilePath);
+    auto pwd         = securePasswordFromQString(password);
     uint64_t sizeBytes = sizeMB * 1024ULL * 1024ULL;
 
-    // Map profile index (0–3 = named profiles, 4 = custom) to EKDFProfile.
     EKDFProfile profile = profileFromIndex(kdfProfileIndex);
 
-    // Map cipher index (0 = AES-256-GCM, 1 = Kuznechik-GCM) to ECipher.
     ECipher cipher;
     switch (cipherIndex) {
         case 0:  cipher = ECipher::AES_256_GCM;   break;
@@ -125,42 +150,46 @@ QString ScefController::createContainer(const QString& destDir,
         default: cipher = ECipher::AES_256_GCM;   break;
     }
 
-    // Pre-validate synchronously (init checks size before creating file)
-    try {
-        fileManager_ = std::make_unique<FileManager>();
-        fileManager_->init(paths, dir, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
-                           /*create_new=*/true, pwd);
+    // Derive the container's parent directory for the success callback.
+    auto containerFilePathQ = QString::fromStdString(filePath);
 
-        fileManager_->setCipher(cipher);
+    // Create a placeholder FileManager; actual init() runs inside runAsync worker
+    // so that file pre-allocation does not block the UI thread.
+    auto fm = std::make_unique<FileManager>();
+    installProgressCallback(fm.get());
+    emit progressChanged(QString(), -1.0);
 
-        if (profile != EKDFProfile::None) {
-            const KdfProfileParams* p = getProfileParams(profile);
-            if (p)
-                fileManager_->setKdfParams(profile, p->m_kib, p->t, p->p);
-        } else {
-            fileManager_->setKdfParams(EKDFProfile::None,
-                                       static_cast<uint32_t>(kdfM_MiB) * 1024u,
-                                       static_cast<uint32_t>(kdfT),
-                                       static_cast<uint32_t>(kdfP));
-        }
-    } catch (const std::exception& e) {
-        fileManager_.reset();
-        return QString::fromUtf8(e.what());
-    }
+    runAsync(std::move(fm),
+        [paths, filePath, sizeBytes, profile, kdfM_MiB, kdfT, kdfP, cipher,
+         pwd = std::move(pwd)](FileManager* f) mutable {
+            // All of this runs on the worker thread.
+            f->init(paths, filePath, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
+                    /*create_new=*/true, pwd);
 
-    // Heavy work runs on a background thread.
-    auto dirQ = QString::fromStdString(dir);
-    installProgressCallback(fileManager_.get());
-    emit progressChanged(QString(), 0.0);
+            f->setCipher(cipher);
 
-    runAsync(std::move(fileManager_),
-        [](FileManager* fm) { fm->write(); },
-        [this, dirQ]() {
-            currentContainerDir_ = dirQ;
+            const KdfProfileParams* p = (profile != EKDFProfile::None)
+                                        ? getProfileParams(profile)
+                                        : nullptr;
+            if (p) {
+                f->setKdfParams(profile, p->m_kib, p->t, p->p);
+            } else {
+                f->setKdfParams(EKDFProfile::None,
+                                static_cast<uint32_t>(kdfM_MiB) * 1024u,
+                                static_cast<uint32_t>(kdfT),
+                                static_cast<uint32_t>(kdfP));
+            }
+
+            f->write();
+        },
+        [this, containerFilePathQ]() {
+            currentContainerDir_ = containerFilePathQ;
             containerOpen_ = true;
             emit containerOpenChanged();
+            emit currentContainerPathChanged();
             refreshFileList();
-        });
+        },
+        /*restoreOnError=*/false);   // on failure leave fileManager_ null
 
     return {};
 }
@@ -182,32 +211,33 @@ QVariantMap ScefController::estimatePasswordStrength(const QString& password,
     return map;
 }
 
+// containerPath: full path to an existing .scef file (not just a directory).
 QString ScefController::openContainer(const QString& containerPath,
                                        const QString& password)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
     auto filePath = toLocalPath(containerPath);
-    QFileInfo fi(QString::fromStdString(filePath));
-    auto dir = fi.absolutePath().toStdString();
-    auto pwd = securePasswordFromQString(password);
-    auto dirQ = fi.absolutePath();
+    auto pwd      = securePasswordFromQString(password);
+    auto containerPathQ = QString::fromStdString(filePath);
 
     auto fm = std::make_unique<FileManager>();
     installProgressCallback(fm.get());
-    emit progressChanged(QString(), 0.0);
+    emit progressChanged(QString(), -1.0);
 
     runAsync(std::move(fm),
-        [dir, pwd = std::move(pwd)](FileManager* f) mutable {
-            f->init({}, dir, 0, DEFAULT_MAX_TABLE_SIZE,
+        [filePath, pwd = std::move(pwd)](FileManager* f) mutable {
+            f->init({}, filePath, 0, DEFAULT_MAX_TABLE_SIZE,
                     /*create_new=*/false, pwd);
         },
-        [this, dirQ]() {
-            currentContainerDir_ = dirQ;
+        [this, containerPathQ]() {
+            currentContainerDir_ = containerPathQ;
             containerOpen_ = true;
             emit containerOpenChanged();
+            emit currentContainerPathChanged();
             refreshFileList();
-        });
+        },
+        /*restoreOnError=*/false);   // on failure leave fileManager_ null
 
     return {};
 }
@@ -222,12 +252,12 @@ QString ScefController::addFiles(const QStringList& filePaths)
         fileManager_->setFilesList(paths);
 
         installProgressCallback(fileManager_.get());
-        emit progressChanged(QString(), 0.0);
+        emit progressChanged(QString(), -1.0);
 
-        // Transfer ownership to the async worker; it returns via onSuccess.
         runAsync(std::move(fileManager_),
             [](FileManager* f) { f->add(); },
-            [this]() { refreshFileList(); });
+            [this]() { refreshFileList(); },
+            /*restoreOnError=*/true);    // keep container open even on error
 
         return {};
     } catch (const std::exception& e) {
@@ -251,11 +281,12 @@ QString ScefController::extractFiles(const QStringList& fileNames,
         fileManager_->setFilesList(names);
 
         installProgressCallback(fileManager_.get());
-        emit progressChanged(QString(), 0.0);
+        emit progressChanged(QString(), -1.0);
 
         runAsync(std::move(fileManager_),
             [outDir](FileManager* f) { f->extract(outDir); },
-            []() {});
+            []() {},
+            /*restoreOnError=*/true);    // keep container open even on error
 
         return {};
     } catch (const std::exception& e) {
@@ -271,6 +302,7 @@ void ScefController::closeContainer()
     currentContainerDir_.clear();
     containerOpen_ = false;
     emit containerOpenChanged();
+    emit currentContainerPathChanged();
 }
 
 QString ScefController::logDirPath() const
@@ -313,6 +345,18 @@ QString ScefController::readLogFile(const QString& path, qint64 maxBytes) const
 
     const QByteArray bytes = file.read(maxBytes);
     return prefix + QString::fromUtf8(bytes);
+}
+
+QString ScefController::defaultContainerName(const QString& dir) const
+{
+    const std::string fullPath = nextAvailableContainerPath(dir.toStdString());
+    return QString::fromStdString(std::filesystem::path(fullPath).filename().string());
+}
+
+QStringList ScefController::containerFilesAtRow(int row) const
+{
+    if (!driveListModel_) return {};
+    return driveListModel_->containerFilesAtRow(row);
 }
 
 FileListModel* ScefController::fileListModel() const
@@ -360,37 +404,37 @@ void ScefController::installProgressCallback(FileManager* fm)
         return;
 
     // FileManager stores this callback while work runs on a worker thread.
-    // The controller is expected to outlive that work; QPointer keeps queued
-    // delivery from touching a destroyed controller if the window closes early.
+    // QPointer prevents use-after-free if the controller is destroyed early.
     QPointer<ScefController> guard(this);
     fm->setProgressCallback([guard](FileManager::ProgressStage stage, double fraction) {
-        const QString label = progressStageLabel(stage);
-        const double clampedFraction = std::clamp(fraction, 0.0, 1.0);
+        const QString label         = progressStageLabel(stage);
+        const double emittedFraction = stageFractionFromCallback(stage, fraction);
 
         if (!guard)
             return;
 
-        QMetaObject::invokeMethod(guard.data(), [guard, label, clampedFraction]() {
+        QMetaObject::invokeMethod(guard.data(), [guard, label, emittedFraction]() {
             if (!guard)
                 return;
-            emit guard->progressChanged(label, clampedFraction);
+            emit guard->progressChanged(label, emittedFraction);
         }, Qt::QueuedConnection);
     });
 }
 
 void ScefController::runAsync(std::unique_ptr<FileManager> fm,
                               std::function<void(FileManager*)> workFn,
-                              std::function<void()> onSuccess)
+                              std::function<void()> onSuccess,
+                              bool restoreOnError)
 {
     busy_ = true;
     emit busyChanged();
 
-    // Transfer FileManager ownership to the worker thread to avoid race conditions.
     auto* fmRaw = fm.get();
     QPointer<ScefController> guard(this);
     auto* thread = QThread::create([guard, fm = std::move(fm), fmRaw,
                                     workFn = std::move(workFn),
-                                    onSuccess = std::move(onSuccess)]() mutable {
+                                    onSuccess = std::move(onSuccess),
+                                    restoreOnError]() mutable {
         QString error;
         try {
             workFn(fmRaw);
@@ -399,16 +443,24 @@ void ScefController::runAsync(std::unique_ptr<FileManager> fm,
         }
 
         QMetaObject::invokeMethod(qApp, [guard, error, fm = std::move(fm),
-                                         onSuccess = std::move(onSuccess)]() mutable {
+                                         onSuccess = std::move(onSuccess),
+                                         restoreOnError]() mutable {
             if (!guard) {
-                // Controller was destroyed while the worker was running.
+                // Controller was destroyed while the worker was running — discard.
                 fm.reset();
                 return;
             }
             auto* self = guard.data();
+
+            // Restore ownership:
+            //   - on success: always restore (container is now open / usable).
+            //   - on error + restoreOnError: restore (add/extract keep the container open).
+            //   - on error + !restoreOnError: discard (create/open failed — not open).
             if (error.isEmpty()) {
                 self->fileManager_ = std::move(fm);
                 onSuccess();
+            } else if (restoreOnError) {
+                self->fileManager_ = std::move(fm);
             } else {
                 fm.reset();
             }
@@ -431,5 +483,3 @@ void ScefController::refreshFileList()
         fileListModel_->clear();
     }
 }
-
-
