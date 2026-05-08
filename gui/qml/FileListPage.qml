@@ -181,7 +181,6 @@ Page {
                             var copy = selectedIndices
                             copy[index] = checked
                             selectedIndices = copy
-                            selectedIndicesChanged()
                         }
                     }
 
@@ -325,7 +324,6 @@ Page {
             } else {
                 if (pendingOperation === "add") {
                     selectedIndices = {}
-                    selectedIndicesChanged()
                 }
                 successLabel.text = pendingMessage
                 successLabel.visible = true
