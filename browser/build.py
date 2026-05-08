@@ -50,8 +50,8 @@ def inline_scripts(html):
 
 
 def remove_dev_comments(html):
-    """Remove development-only HTML comments."""
-    return re.sub(r'\s*<!--.*?-->\s*', '\n', html)
+    """Remove development-only HTML comments (including multi-line)."""
+    return re.sub(r'\s*<!--.*?-->\s*', '\n', html, flags=re.DOTALL)
 
 
 def build():

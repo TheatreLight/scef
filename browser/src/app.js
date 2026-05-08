@@ -142,7 +142,9 @@ async function onUnlock() {
     UI.unlockBtnEl.disabled = true;
 
     try {
-        // Check browser WASM memory limit using first valid slot's KDF params
+        // Check browser WASM memory limit using first valid slot's KDF params.
+        // All slots share the same KDF params in a well-written container, so
+        // checking slot 0 is sufficient for the memory-limit guard.
         const firstHeader = validSlots[0].header;
         if (firstHeader.kdfMKib > SCEF.KDF_M_KIB_BROWSER_MAX) {
             const mMib = (firstHeader.kdfMKib / 1024).toFixed(0);
@@ -150,26 +152,48 @@ async function onUnlock() {
             return;
         }
 
-        // Step 1: Derive KEK via Argon2id (once — all slots share the same salt/params)
+        // Step 1 + Step 2: Derive KEK per slot and verify HMAC.
+        //
+        // Design: In a correctly-written container all 4 slots share the same
+        // salt, so Argon2id runs exactly once (salt equality is detected below
+        // and the previous KEK is reused).  If slot 0's salt is corrupted
+        // (e.g. a partial write interrupted mid-header) the KEK derived from
+        // slot 0 will fail HMAC on every slot.  We therefore re-derive the KEK
+        // whenever the current slot's salt differs from the previously used
+        // salt, giving genuine per-slot crash resilience.
         UI.status('Deriving key... this may take a moment.', 'info');
         await new Promise(r => setTimeout(r, 50));
 
-        const kek = await deriveKEK(
-            password,
-            firstHeader.salt,
-            firstHeader.kdfMKib,
-            firstHeader.kdfT,
-            firstHeader.kdfP
-        );
+        let kek = null;
+        let lastSalt = null;  // Uint8Array of the salt used for the current KEK
 
-        // Step 2: Try all valid slots — find one that passes HMAC + DEK unwrap.
-        // Mirrors C++ readMeta() crash resilience: if slot 0 is corrupted,
-        // fall back to slot 1, 2, 3.
-        UI.status('Verifying...', 'info');
+        function saltEquals(a, b) {
+            if (!a || !b || a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return false; }
+            return true;
+        }
+
         let recovered = false;
         let lastError = '';
 
         for (const slot of validSlots) {
+            // Re-derive KEK only when this slot's salt differs from the one
+            // we already have a KEK for (avoids redundant Argon2id work in the
+            // common case where all slots share the same salt).
+            if (!saltEquals(slot.header.salt, lastSalt)) {
+                if (kek) kek.fill(0);  // zero the old KEK before replacing it
+                UI.status('Deriving key for slot ' + slot.slotIndex + '...', 'info');
+                await new Promise(r => setTimeout(r, 10));
+                kek = await deriveKEK(
+                    password,
+                    slot.header.salt,
+                    slot.header.kdfMKib,
+                    slot.header.kdfT,
+                    slot.header.kdfP
+                );
+                lastSalt = slot.header.salt;
+            }
+
             try {
                 const hmacOk = await verifyHeaderHMAC(
                     kek,
@@ -194,7 +218,7 @@ async function onUnlock() {
         }
 
         // Zero KEK — no longer needed (best-effort in JS)
-        kek.fill(0);
+        if (kek) kek.fill(0);
 
         if (!recovered) {
             UI.status('Wrong password or corrupted container.', 'error');
@@ -221,6 +245,12 @@ async function onUnlock() {
         UI.showHeaderInfo(activeHeader, activeSlotIndex);
         UI.showFileList(fileTable.files);
         UI.status('Unlocked. ' + fileTable.files.length + ' file(s).', 'success');
+
+        // Clear password field — reduces DOM exposure of the password string
+        // after a successful unlock.  The value cannot be zeroed from memory
+        // (JS strings are immutable) but removing it from the input is
+        // the best-effort action available in a browser context.
+        UI.passwordInputEl.value = '';
 
         attachDownloadHandlers();
 
