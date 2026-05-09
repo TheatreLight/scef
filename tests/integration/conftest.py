@@ -70,11 +70,13 @@ DEFAULT_PASSWORD = "integration_test_password_123"
 DEFAULT_CONTAINER_SIZE = 4 * 1024 * 1024
 
 # Minimal Argon2id KDF parameters used by all tests that do not specifically
-# test KDF profiles.  These values are just above the CLI-enforced minimum
-# (m >= 8 MiB) and keep per-container derivation time well under 0.1s,
-# dramatically reducing the total integration-test wall-clock time.
+# test KDF profiles.  These values pass the hard minimum check (m >= 1 MiB is
+# the hard floor per container-format.md:97) but are below the warning
+# threshold of 8 MiB (KDF_M_KIB_WARN), so a LOG_WARN is emitted.
+# The warning is expected and harmless; it does not affect the return code.
 # Tests in test_kdf_profiles.py use their own dedicated create helpers
 # (_create_with_kdf_profile / _create_with_custom_kdf) and are not affected.
+# Unit: --kdf-m takes MiB, so m=1 means 1 MiB = 1024 KiB.
 FAST_KDF_ARGS = ["--kdf-m", "1", "--kdf-t", "1", "--kdf-p", "1"]
 
 

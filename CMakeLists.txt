@@ -79,6 +79,7 @@ add_library(scef_lib STATIC
     src/NativeFile.cpp
     src/BenchMeasurerGuard.cpp
     src/PasswordStrengthEstimator.cpp
+    src/ContainerName.cpp
 )
 
 target_include_directories(scef_lib PUBLIC
@@ -106,7 +107,15 @@ target_link_libraries(scef_lib PUBLIC nlohmann_json::nlohmann_json)
 target_link_libraries(scef_lib PRIVATE zxcvbn)
 
 # --- CLI executable ---
-add_executable(scef src/main.cpp)
+add_executable(scef
+    src/main.cpp
+    src/cli/args.cpp
+    src/cli/password_io.cpp
+    src/cli/commands.cpp
+    src/cli/benchmark.cpp
+    src/cli/help.cpp
+)
+target_include_directories(scef PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(scef PRIVATE scef_lib)
 
 # --- Benchmarks ---

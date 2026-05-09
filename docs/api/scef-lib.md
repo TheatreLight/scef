@@ -37,8 +37,9 @@ Non-copyable, non-movable.
 
 ```cpp
 Header();
-// Default-constructs with: AES_256_GCM cipher, Argon2id KDF, Standard profile,
+// Default-constructs with: AES_256_GCM cipher, Argon2id KDF,
 // kdf_m_kib=65536, kdf_t=3, kdf_p=4, all buffers zeroed.
+// Note: default member values (current code; subject to change pending src F-4 fix).
 
 void read(const HeaderBuffer& buf);
 // Deserialize from a 4096-byte buffer into fields. Does not verify HMAC.
@@ -137,31 +138,41 @@ Non-copyable, non-movable. Central coordinator for all container I/O.
 
 ```cpp
 FileManager();
-~FileManager();  // closes containerStream_
+~FileManager();  // closes containerFile_
 ```
 
 #### Public Methods
 
 ```cpp
+#include <botan/secmem.h>  // for Botan::secure_vector
+
 void init(
     const std::vector<std::string>& filesList,
     const std::string& pathToDir,
     uint64_t container_size = 0,
     uint32_t max_table_size = DEFAULT_MAX_TABLE_SIZE,
     bool create_new = false,
-    const std::string& password = ""
+    const Botan::secure_vector<char>& password = Botan::secure_vector<char>{}
 );
 // Initialize the FileManager.
 // create_new=true: container_size must be non-zero; creates and pre-allocates container.
 //                  Validates that files fit before creating the file.
 // create_new=false: pathToDir/container.scef must already exist; calls readMeta().
-// password: used for KEK derivation; zeroed after use.
+// password: secure_vector ensures heap memory is zeroed on destruction.
 // Throws std::runtime_error on any validation or I/O failure.
 
 void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
 // Set KDF parameters for container creation. Call BEFORE write().
 // profile != EKDFProfile::None: look up params from profile table; m_kib/t/p ignored.
 // profile == EKDFProfile::None: use supplied m_kib, t, p directly (custom mode).
+
+void setCipher(ECipher c);
+// Set the cipher for container creation. Call BEFORE write().
+// Default: ECipher::AES_256_GCM.
+
+void setProgressCallback(ProgressCallback cb);
+// Optional: install a callback invoked at each pipeline stage.
+// Signature: void(ProgressStage stage, double fraction).
 
 void write();
 // Create flow: createContainerFile → initCrypto → writeAllSlots → writeChunks → writeFileTableToAllSlots.
@@ -185,9 +196,6 @@ void extract(const std::string& pathToOutputFolder);
 void setFilesList(const std::vector<std::string>& filesList);
 // Replace the file list without re-opening the container.
 // Used by GUI to reuse an already-open FileManager for add/extract.
-
-void printHeader() const;
-// Print header fields to stdout via Logger.
 
 void printFilesTable() const;
 // Print file table entries (name + size) to stdout via Logger.
@@ -217,7 +225,9 @@ CryptoManager();
 ### Methods
 
 ```cpp
-void deriveKek(const std::string& password, Header& header);
+#include <botan/secmem.h>  // for Botan::secure_vector
+
+void deriveKek(const Botan::secure_vector<char>& password, Header& header);
 // Derive 256-bit KEK via Argon2id using header.getKdfMKib/T/P and header.getSaltData().
 // Sets kek_ready_ = true, dek_ready_ = false.
 // Throws std::runtime_error if Argon2id is unavailable.
@@ -294,15 +304,6 @@ FileTable();
 #### Methods
 
 ```cpp
-void updateChecksum(const void* chunk, size_t size);
-// Feed bytes into the SHA-256 hasher (incremental).
-
-std::string getChecksum();
-// Finalize and return hex-encoded SHA-256, then reset the hasher.
-
-void resetChecksum();
-// Explicitly reset the hasher. Call before the first updateChecksum() of each file.
-
 void addFileEntry(
     const std::string& pathToFile,
     const std::string& checkSum,
@@ -378,9 +379,7 @@ struct KdfProfileParams {
 [[nodiscard]] const KdfProfileParams* getProfileByName(std::string_view name);
 // Look up profile by CLI name. Returns nullptr if not found.
 // Valid names: "fast", "default", "high", "browser".
-
-[[nodiscard]] EKDFProfile getDefaultProfile();
-// Returns EKDFProfile::Standard.
+// To retrieve the default profile: getProfileByName("default").
 ```
 
 **Profile table** (from `src/KdfProfiles.cpp`):
@@ -403,7 +402,7 @@ struct KdfProfileParams {
 Thread-safe, file-backed logger with rotation. Not part of the external API for library consumers, but used pervasively in `scef_lib` internals.
 
 ```cpp
-enum class LogLevel { DEBUG = 0, INFO = 1, WARNING = 2, ERROR = 3 };
+enum class LogLevel { DEBUG = 0, INFO = 1, BENCH = 2, WARNING = 3, ERROR = 4 };
 
 class Logger {
 public:
@@ -418,6 +417,12 @@ public:
     static void setLevel(LogLevel level);
     // Discard messages below this level.
 
+    static void setBenchEnabled(bool enabled);
+    [[nodiscard]] static bool benchEnabled();
+    // Control whether BENCH-level messages are written.
+    // BENCH messages are suppressed unless benchEnabled() returns true,
+    // even if minLevel_ <= BENCH.
+
     static void log(LogLevel level, const char* fmt, ...);
     // Write formatted message. Use macros instead.
 };
@@ -428,11 +433,53 @@ public:
 ```cpp
 LOG_DEBUG(fmt, ...)    // LogLevel::DEBUG
 LOG_INFO(fmt, ...)     // LogLevel::INFO
+LOG_BENCH(fmt, ...)    // LogLevel::BENCH  (benchmark timing output)
 LOG_WARN(fmt, ...)     // LogLevel::WARNING
 LOG_ERROR(fmt, ...)    // LogLevel::ERROR
 ```
 
 **Rotation:** Max 1 MiB per file, max 10 files. Oldest deleted when limit reached.
+
+---
+
+## PasswordStrengthEstimator.h
+
+```cpp
+#include "PasswordStrengthEstimator.h"
+```
+
+Non-copyable, non-movable. Wraps the zxcvbn-c library for password entropy estimation. Does not log the password; does not retain a copy after `estimate()` returns.
+
+### struct Result
+
+```cpp
+struct Result {
+    int    score;                  // 0..4 (0 = very weak, 4 = very strong)
+    double bits;                   // log2(guesses) — entropy estimate
+    int    recommendedMin;         // minimum recommended score for the requested profile
+    bool   meetsRecommendation;    // score >= recommendedMin
+    std::string warning;           // English warning; empty if meetsRecommendation
+    std::string crackTimeOffline;  // human-readable offline crack time, e.g. "13 minutes"
+};
+```
+
+### class PasswordStrengthEstimator
+
+```cpp
+PasswordStrengthEstimator();
+~PasswordStrengthEstimator();
+```
+
+#### Methods
+
+```cpp
+Result estimate(const Botan::secure_vector<char>& password, EKDFProfile profile) const;
+// Estimate strength of password relative to the KDF cost of the given profile.
+// Pure function: does not log the password and does not keep a copy after return.
+
+static int recommendedMinScore(EKDFProfile profile) noexcept;
+// Single source of truth for per-profile minimum score thresholds.
+```
 
 ---
 
@@ -488,3 +535,20 @@ Common exception messages:
 | `"Header KDF parameters out of acceptable range"` | Corrupt or crafted header |
 | `"Argon2id not available in this Botan build"` | Botan built without Argon2id |
 | `"There is no such file in current container or wrong file name."` | `extract()` with non-existent file name |
+
+---
+
+## Internal Infrastructure
+
+The following classes are defined in `include/` but are **not part of the public API** consumed by CLI, GUI, or external integrators. They are used internally by `FileManager` and are subject to change without notice.
+
+| Class | Header | Purpose |
+|-------|--------|---------|
+| `EncryptPipeline` | `include/EncryptPipeline.h` | Multi-stage pipeline (reader/worker/writer threads) for parallel file encryption; computes SHA-256 checksums internally and calls `fileTable_.addFileEntry()` |
+| `DecryptPipeline` | `include/DecryptPipeline.h` | Multi-stage pipeline for parallel file decryption |
+| `FragmentedIO` | `include/FragmentedIO.h` | Facade that routes pipeline reads/writes through `NativeFile`, automatically skipping slot reserved areas |
+| `CryptoContext` | `include/CryptoContext.h` | Per-thread fast-path cipher context used by pipeline workers |
+| `BoundedQueue` | `include/BoundedQueue.h` | Thread-safe bounded queue used by both pipelines |
+| `NativeFile` | `include/NativeFile.h` | Thin RAII wrapper around OS file handles (`HANDLE` on Windows, `int fd` on Linux); replaces `std::fstream`. Provides `syncToDevice()` for durable writes. |
+
+Do not instantiate these classes directly from application code.

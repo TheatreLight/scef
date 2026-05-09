@@ -8,7 +8,7 @@
  *   - Blob fallback: decrypt → assemble in memory → download.
  *     Limited to MAX_BLOB_SIZE. Works in all browsers.
  *
- * Mirrors C++ FileManager::readChunks() + readFragmented() + skipSlots().
+ * Mirrors C++ FileManager::readChunks() + skipSlots().
  */
 
 // Blob download memory limit (decrypted data + assembled array + Blob copy).
@@ -43,30 +43,6 @@ function bytesUntilNextSlot(cur, remaining, slotOffsets) {
         }
     }
     return remaining;
-}
-
-/**
- * Read `size` bytes from the container File starting at `startPos`,
- * skipping over slot reserved areas.
- */
-async function readFragmented(file, startPos, size, slotOffsets, slotReservedSize) {
-    const result = new Uint8Array(size);
-    let totalRead = 0;
-    let pos = startPos;
-
-    while (totalRead < size) {
-        pos = skipSlots(pos, slotOffsets, slotReservedSize);
-        const canRead = bytesUntilNextSlot(pos, size - totalRead, slotOffsets);
-
-        const slice = file.slice(pos, pos + canRead);
-        const chunk = new Uint8Array(await slice.arrayBuffer());
-        result.set(chunk, totalRead);
-
-        totalRead += canRead;
-        pos += canRead;
-    }
-
-    return { data: result, endPos: pos };
 }
 
 /**
@@ -241,8 +217,8 @@ async function downloadFile(containerFile, header, fileEntry, dekKey, slotOffset
             });
             const writable = await handle.createWritable();
             try {
-                await decryptFileStreaming(containerFile, header, fileEntry, dekKey, slotOffsets, writable);
                 UI.status('Writing ' + fileEntry.name + ' to disk...', 'info');
+                await decryptFileStreaming(containerFile, header, fileEntry, dekKey, slotOffsets, writable);
                 await writable.close();
                 UI.status('Downloaded ' + fileEntry.name + ' (' + formatSize(fileEntry.size) + '), checksum verified.', 'success');
                 return;
@@ -289,7 +265,10 @@ async function downloadAllAsZip(containerFile, header, files, dekKey, slotOffset
     for (let i = 0; i < files.length; i++) {
         const prefix = '[' + (i + 1) + '/' + files.length + '] ';
         const data = await decryptFileToMemory(containerFile, header, files[i], dekKey, slotOffsets, prefix);
-        zip.file(files[i].name, data);
+        // Strip path components to prevent traversal (e.g. ../etc/passwd) in the ZIP.
+        // Mirrors C++ extract() which uses std::filesystem::path::filename().
+        const safeName = files[i].name.split('/').pop().split('\\').pop() || files[i].name;
+        zip.file(safeName, data);
     }
 
     UI.status('Creating ZIP archive...', 'info');

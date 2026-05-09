@@ -52,15 +52,16 @@ FileManager::~FileManager() {
     LOG_INFO("FileManager::~FileManager()");
 }
 
-void FileManager::init(const std::vector<std::string>& filesList, const std::string& pathToDir,
+void FileManager::init(const std::vector<std::string>& filesList, const std::string& containerFilePath,
     uint64_t containerSize, uint32_t maxTableSize, bool createNew,
     const Botan::secure_vector<char>& password)
 {
     LOG_INFO("FileManager::init: files=%zu, path=%s, containerSize=%llu, maxTableSize=%u",
-        filesList.size(), pathToDir.c_str(), containerSize, maxTableSize);
+        filesList.size(), containerFilePath.c_str(), containerSize, maxTableSize);
 
-    containerFilePath_ = pathToDir + "/" + CONTAINER_FILE_NAME;
-    container_size_param_ = containerSize;
+    // containerFilePath is the full path to the container file.
+    // Use std::filesystem to normalise separators (handles trailing slashes, UNC paths, etc.).
+    containerFilePath_ = std::filesystem::path(containerFilePath).string();
     filesList_ = filesList;
     password_ = password;
 
@@ -71,16 +72,7 @@ void FileManager::init(const std::vector<std::string>& filesList, const std::str
 
     slotOffsets_ = computeSlotOffsets();  // create path uses the param-provided size
 
-    if (createNew && !filesList.empty()) {
-        uint64_t available = computeAvailableDataCapacity();
-        uint64_t required  = computeRequiredDataBytes();
-        if (required > available) {
-            throw std::runtime_error(
-                "Files too large for container: need " + std::to_string(required) +
-                " bytes of data capacity but container only provides " +
-                std::to_string(available) + " bytes");
-        }
-    }
+    // Duplicate capacity pre-check removed (F-11): the authoritative check is in write().
 
     if (!createNew) {
         // Open existing container for reading and writing.
@@ -172,6 +164,28 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
         header_->setKdfT(params->t);
         header_->setKdfP(params->p);
     } else {
+        // Custom mode: clamp to valid bounds and warn when clamping occurs.
+        if (m_kib < KDF_M_KIB_MIN) {
+            LOG_WARN("setKdfParams: m_kib=%u below minimum %u; clamping", m_kib, KDF_M_KIB_MIN);
+            m_kib = KDF_M_KIB_MIN;
+        } else if (m_kib > KDF_M_KIB_MAX) {
+            LOG_WARN("setKdfParams: m_kib=%u above maximum %u; clamping", m_kib, KDF_M_KIB_MAX);
+            m_kib = KDF_M_KIB_MAX;
+        }
+        if (t < KDF_T_MIN) {
+            LOG_WARN("setKdfParams: t=%u below minimum %u; clamping", t, KDF_T_MIN);
+            t = KDF_T_MIN;
+        } else if (t > KDF_T_MAX) {
+            LOG_WARN("setKdfParams: t=%u above maximum %u; clamping", t, KDF_T_MAX);
+            t = KDF_T_MAX;
+        }
+        if (p < KDF_P_MIN) {
+            LOG_WARN("setKdfParams: p=%u below minimum %u; clamping", p, KDF_P_MIN);
+            p = KDF_P_MIN;
+        } else if (p > KDF_P_MAX) {
+            LOG_WARN("setKdfParams: p=%u above maximum %u; clamping", p, KDF_P_MAX);
+            p = KDF_P_MAX;
+        }
         header_->setKdfProfile(EKDFProfile::None);
         header_->setKdfMKib(m_kib);
         header_->setKdfT(t);
@@ -396,10 +410,12 @@ void FileManager::readMeta() {
     LOG_INFO("Call FileManager::readMeta()");
     BenchMeasurerGuard bench("FileManager::readMeta TOTAL");
     emitProgress(ProgressStage::DerivingKey, 0.0);
-    // Crash resilience strategy (spec 4.6.3): try all 4 slots, first with
-    // valid HMAC wins.  KEK is derived at most twice (once per distinct salt).
+    // Crash resilience strategy (spec 4.6.3): try all 4 slots, accept the first
+    // where HMAC, DEK unwrap, AND file table decrypt all succeed.
+    // KEK is derived at most twice (once per distinct salt).
 
     // Helper: read one header slot into header_. Returns true if magic is valid.
+    // Redundant 4-byte pre-check removed (F-14): header_->validate() already checks magic.
     auto trySlotMagic = [this](uint64_t offset) -> bool {
         HeaderBuffer hdrBuf;
         char* hdrPtr = reinterpret_cast<char*>(hdrBuf.data());
@@ -408,18 +424,9 @@ void FileManager::readMeta() {
         } catch (...) {
             return false;
         }
-        if (hdrBuf[0] != static_cast<uint8_t>(HEADER_MAGIC[0]) ||
-            hdrBuf[1] != static_cast<uint8_t>(HEADER_MAGIC[1]) ||
-            hdrBuf[2] != static_cast<uint8_t>(HEADER_MAGIC[2]) ||
-            hdrBuf[3] != static_cast<uint8_t>(HEADER_MAGIC[3])) {
-            return false;
-        }
         header_->read(hdrBuf);
         return header_->validate();
     };
-
-    // Preserve a secure copy of the password for potential re-derivation.
-    Botan::secure_vector<char> passwordCopy(password_.begin(), password_.end());
 
     // Compute slot offsets from file size.
     uint64_t fileSize = containerFile_.size();
@@ -463,7 +470,7 @@ void FileManager::readMeta() {
         try {
             crypto_->setCipher(header_->getCipher());
             if (!kekDerived) {
-                password_.assign(passwordCopy.begin(), passwordCopy.end());
+                // password_ is never modified by deriveKek (takes const ref); use it directly.
                 validateKdfParamsAndDeriveKek();
                 kekDerived = true;
                 kekDerivations++;
@@ -477,13 +484,19 @@ void FileManager::readMeta() {
             verifyHeaderHmac();
             emitProgress(ProgressStage::UnwrappingKey, 0.0);
             unwrapDekFromHeader();
+
+            // F-1: read the file table inside the loop so that a torn file table on this
+            // slot does not block fallback to healthy backup slots.
+            emitProgress(ProgressStage::ReadingFileTable, 0.0);
             activeSlotOffset_ = slotOff;
+            readFilesTable();
+
             recovered = true;
             LOG_DEBUG("readMeta: recovered from slot %zu at offset %llu", i, slotOff);
             break;
         } catch (const std::exception& ex) {
             lastError = ex.what();
-            LOG_DEBUG("readMeta: slot %zu auth failed: %s", i, ex.what());
+            LOG_DEBUG("readMeta: slot %zu auth/table failed: %s", i, ex.what());
         }
     }
 
@@ -499,8 +512,13 @@ void FileManager::readMeta() {
         }
     }
 
-    emitProgress(ProgressStage::ReadingFileTable, 0.0);
-    readFilesTable();
+    // F-8: Validate container_size from the authenticated header against the minimum.
+    if (header_->getContainerSize() < MINIMAL_CONTAINER_SIZE) {
+        throw std::runtime_error("container_size below minimum: authenticated header claims " +
+            std::to_string(header_->getContainerSize()) + " bytes but minimum is " +
+            std::to_string(MINIMAL_CONTAINER_SIZE));
+    }
+
     LOG_DEBUG("readMeta: complete, %zu file(s) in table, container_size=%llu",
               fileTable_.getFilesTable().size(), header_->getContainerSize());
 }
@@ -564,9 +582,9 @@ void FileManager::write() {
     emitProgress(ProgressStage::WritingHeaders, 0.0);
     writeAllSlots();
 
-    size_t endPos = writeChunks(header_->getHeaderSize() + header_->getMaxTableSize(),
-                                /*reportProgress=*/true);
-    fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
+    uint64_t endPos = writeChunks(header_->getHeaderSize() + header_->getMaxTableSize(),
+                                  /*reportProgress=*/true);
+    fileTable_.setNextWriteOffset(endPos);
     logFragmentedWriteStats();
 
     writeFileTableToAllSlots();
@@ -607,12 +625,12 @@ void FileManager::add() {
             std::to_string(freeCapacity) + " bytes remain");
     }
 
-    size_t endPos = writeChunks(static_cast<size_t>(dataEnd), /*reportProgress=*/true);
-    fileTable_.setNextWriteOffset(static_cast<uint64_t>(endPos));
+    uint64_t endPos = writeChunks(dataEnd, /*reportProgress=*/true);
+    fileTable_.setNextWriteOffset(endPos);
     writeFileTableToAllSlots();
 
-    LOG_DEBUG("add: complete, new data_end=%zu, file_count=%zu",
-              endPos, fileTable_.getFilesTable().size());
+    LOG_DEBUG("add: complete, new data_end=%llu, file_count=%zu",
+              static_cast<unsigned long long>(endPos), fileTable_.getFilesTable().size());
     emitProgress(ProgressStage::Done, 1.0);
 }
 
@@ -638,7 +656,7 @@ FragmentedIO FileManager::makeFragmentedIO() {
     return fio;
 }
 
-size_t FileManager::writeChunks(size_t offset, bool reportProgress) {
+uint64_t FileManager::writeChunks(uint64_t offset, bool reportProgress) {
     BenchMeasurerGuard bench("FileManager::writeChunks");
 
     size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
@@ -698,9 +716,15 @@ void FileManager::readFilesTable() {
 
     uint32_t encSize = header_->getFileTableSize();
     LOG_DEBUG("readFilesTable: table_offset=%llu, enc_size=%u", tableOffset, encSize);
-    if (encSize <= NONCE_SIZE + AUTH_TAG_SIZE) {
-        LOG_DEBUG("readFilesTable: table empty (enc_size <= overhead), skipping");
+    if (encSize == 0) {
+        LOG_DEBUG("readFilesTable: table empty (enc_size == 0), skipping");
         return;
+    }
+    if (encSize <= NONCE_SIZE + AUTH_TAG_SIZE) {
+        throw std::runtime_error(
+            "corrupt file_table_size: " + std::to_string(encSize) +
+            " bytes is too small to contain nonce+tag overhead of " +
+            std::to_string(NONCE_SIZE + AUTH_TAG_SIZE) + " bytes");
     }
     size_t plainSize = encSize - NONCE_SIZE - AUTH_TAG_SIZE;
 

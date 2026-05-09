@@ -19,6 +19,8 @@ Verified behaviors
 - Custom --max_table_size: all 4 backup slots carry SCEF magic at correct offsets.
 - --max_table_size flag on 'add' command is accepted without error.
 - Small --max_table_size (4096) still works for a single-file roundtrip.
+- All 4 slot headers are byte-identical after write (spec: writeAllSlots writes identical content).
+- Slot offset formula matches spec for non-power-of-2 container sizes.
 """
 
 import pathlib
@@ -53,6 +55,19 @@ SCEF_MAGIC = b"SCEF"
 
 def container_file(container_dir: pathlib.Path) -> pathlib.Path:
     return container_dir / "container.scef"
+
+
+def spec_slot_offset(container_size: int, percent: int) -> int:
+    """
+    Compute the byte offset of a slot using the SCEF spec formula.
+
+    Spec (FileManager.h, container-format.md):
+        floor(container_size * percent / 100 / HEADER_SIZE) * HEADER_SIZE
+    For percent == 0 always returns 0.
+    """
+    if percent == 0:
+        return 0
+    return (container_size * percent // 100 // HEADER_SIZE) * HEADER_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +135,11 @@ class TestCreateSingleTextFile:
         """
         The SCEF slot-based layout duplicates (Header + File Table) at 0%, 25%, 50%,
         and 75% of the container.  All four slots must start with the 'SCEF' magic.
+
+        Uses the spec formula for slot offsets:
+            floor(size * N / 100 / HEADER_SIZE) * HEADER_SIZE
+        This is correct for any container size; the previous naive formula
+        (size // 4, size // 2, etc.) only coincidentally agrees for power-of-2 sizes.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -130,16 +150,48 @@ class TestCreateSingleTextFile:
         data = container_file(cdir).read_bytes()
         size = len(data)
 
-        slot_offsets = [
-            0,
-            size // 4,
-            size // 2,
-            (size * 3) // 4,
-        ]
-        for offset in slot_offsets:
+        offsets = [spec_slot_offset(size, pct) for pct in (0, 25, 50, 75)]
+        for pct, offset in zip((0, 25, 50, 75), offsets):
             magic = data[offset : offset + 4]
             assert magic == SCEF_MAGIC, (
-                f"Slot at offset {offset} (container size={size}) "
+                f"Slot at {pct}% (offset {offset}, container size={size}) "
+                f"must start with magic 'SCEF', got {magic!r}"
+            )
+
+    @pytest.mark.parametrize("container_size", [
+        1_000_000,    # non-power-of-2: formula diverges from size//4 here
+        794624,       # capacity-overflow boundary size from test_capacity_overflow
+        1_048_576,    # exact 1 MiB (power-of-2, should always work)
+    ])
+    def test_all_four_slots_start_with_scef_magic_various_sizes(self, tmp_path, container_size):
+        """
+        Spec-compliance: verify the SCEF magic at all four slot positions using
+        the spec formula for several container sizes, including non-power-of-2 sizes
+        where the naive size//4 formula would place slots at the wrong offsets.
+
+        For example, container_size=1_000_000:
+          spec formula: slot 1 at (1_000_000 * 25 // 100 // 4096) * 4096 = 245760
+          naive formula: 1_000_000 // 4 = 250000  ← wrong, not aligned to 4096
+        """
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+        src = make_text_file(tmp_path / "data.txt", "x" * 16)
+
+        create_container(cdir, [src], size=container_size)
+
+        data = container_file(cdir).read_bytes()
+        actual_size = len(data)
+        assert actual_size == container_size, (
+            f"Container size {actual_size} != requested {container_size}"
+        )
+
+        for pct in (0, 25, 50, 75):
+            offset = spec_slot_offset(actual_size, pct)
+            magic = data[offset : offset + 4]
+            assert magic == SCEF_MAGIC, (
+                f"Slot at {pct}% (spec offset={offset}, "
+                f"naive offset={actual_size * pct // 100}, "
+                f"container_size={actual_size}) "
                 f"must start with magic 'SCEF', got {magic!r}"
             )
 
@@ -404,9 +456,10 @@ class TestCreateWithMaxTableSize:
         must still be placed at 0%, 25%, 50%, and 75% of the total container
         size, and each slot must begin with the 4-byte magic 'SCEF'.
 
-        The slot offsets are derived from the container size (quarters), not
-        from HEADER_SIZE or max_table_size, so this test uses the actual file
-        size to compute them rather than any hard-coded constant.
+        Slot offsets are computed using the spec formula:
+            floor(container_size * N / 100 / HEADER_SIZE) * HEADER_SIZE
+        NOT the naive formula (size // 4, etc.) which only coincidentally agrees
+        for power-of-2 container sizes.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -422,17 +475,47 @@ class TestCreateWithMaxTableSize:
         data = container_file(cdir).read_bytes()
         total = len(data)
 
-        slot_offsets = [
-            0,
-            total // 4,
-            total // 2,
-            (total * 3) // 4,
-        ]
-        for offset in slot_offsets:
+        for pct in (0, 25, 50, 75):
+            offset = spec_slot_offset(total, pct)
             magic = data[offset : offset + 4]
             assert magic == SCEF_MAGIC, (
-                f"Slot at offset {offset} (container_size={total}, "
+                f"Slot at {pct}% (offset {offset}, container_size={total}, "
                 f"max_table_size={self.CUSTOM_MAX_TABLE_SIZE}) "
+                f"must start with magic 'SCEF', got {magic!r}"
+            )
+
+    def test_all_four_slots_have_scef_magic_non_power_of_two_size(self, tmp_path):
+        """
+        Spec-compliance: with --max_table_size 131072 and a non-power-of-2 container
+        size (1_000_000 bytes), the slot formula must still place all four 'SCEF'
+        magic markers correctly.
+
+        For this size, the naive formula (size // 4 = 250000) does not align to
+        HEADER_SIZE (4096), while the spec formula gives 245760 for slot 1.
+        """
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+        src = make_text_file(tmp_path / "f.txt", "non-power-of-2 slot test")
+        NON_POWER_OF_2_SIZE = 1_000_000
+
+        create_container(
+            cdir,
+            [src],
+            size=NON_POWER_OF_2_SIZE,
+            max_table_size=self.CUSTOM_MAX_TABLE_SIZE,
+        )
+
+        data = container_file(cdir).read_bytes()
+        total = len(data)
+        assert total == NON_POWER_OF_2_SIZE
+
+        for pct in (0, 25, 50, 75):
+            offset = spec_slot_offset(total, pct)
+            magic = data[offset : offset + 4]
+            assert magic == SCEF_MAGIC, (
+                f"Slot at {pct}% (spec offset={offset}, "
+                f"naive offset={total * pct // 100}, "
+                f"container_size={total}, max_table_size={self.CUSTOM_MAX_TABLE_SIZE}) "
                 f"must start with magic 'SCEF', got {magic!r}"
             )
 

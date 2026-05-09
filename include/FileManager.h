@@ -11,6 +11,7 @@
 
 #include <array>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -35,14 +36,31 @@ constexpr std::array<size_t, SLOT_COUNT> SLOT_PERCENTAGES = {0, 25, 50, 75};
 }
 
 // Compute all four slot offsets from a container (or file) size and header size.
-// Uses the same formula as computeSlotOffset for each percentage in SLOT_PERCENTAGES.
+// Delegates to computeSlotOffset for each percentage in SLOT_PERCENTAGES.
 [[nodiscard]] inline std::array<uint64_t, SLOT_COUNT>
 computeSlotOffsets(uint64_t containerOrFileSize, uint32_t headerSize) {
     std::array<uint64_t, SLOT_COUNT> out{};
-    for (size_t i = 1; i < SLOT_COUNT; ++i) {
-        out[i] = (containerOrFileSize * SLOT_PERCENTAGES[i] / 100 / headerSize) * headerSize;
+    for (size_t i = 0; i < SLOT_COUNT; ++i) {
+        out[i] = computeSlotOffset(containerOrFileSize, SLOT_PERCENTAGES[i], headerSize);
     }
     return out;
+}
+
+// Returns dir/container.scef if that path does not exist; otherwise tries
+// dir/container_1.scef, dir/container_2.scef, ... until an unused name is found.
+// The caller is responsible for passing a valid directory path.
+[[nodiscard]] inline std::string nextAvailableContainerPath(const std::string& dir) {
+    namespace fs = std::filesystem;
+    fs::path base = fs::path(dir) / "container.scef";
+    if (!fs::exists(base)) {
+        return base.string();
+    }
+    for (uint64_t n = 1; ; ++n) {
+        fs::path candidate = fs::path(dir) / ("container_" + std::to_string(n) + ".scef");
+        if (!fs::exists(candidate)) {
+            return candidate.string();
+        }
+    }
 }
 
 class FileManager {
@@ -71,8 +89,11 @@ public:
 
     // create_new=true: container_size must be non-zero; creates and pre-allocates a new container.
     // create_new=false: file must already exist; throws std::runtime_error if it does not.
+    // containerFilePath: full path to the container file (e.g. "/mnt/usb/container.scef").
+    //                    The caller is responsible for picking the filename.
+    //                    Use nextAvailableContainerPath() to generate a non-colliding name.
     // password: used to derive KEK and authenticate the DEK.
-    void init(const std::vector<std::string>& filesList, const std::string& pathToDir,
+    void init(const std::vector<std::string>& filesList, const std::string& containerFilePath,
               uint64_t container_size = 0, uint32_t max_table_size = DEFAULT_MAX_TABLE_SIZE,
               bool create_new = false,
               const Botan::secure_vector<char>& password = Botan::secure_vector<char>{});
@@ -135,7 +156,7 @@ private:
     // Write file table bytes (zero-padded to max_table_size) at slot_offset + header_size.
     void writeFileTableAt(uint64_t slot_offset, const std::vector<char>& encrypted_table);
 
-    size_t writeChunks(size_t startOffset, bool reportProgress = false);
+    uint64_t writeChunks(uint64_t startOffset, bool reportProgress = false);
 
     // Build a FragmentedIO facade that routes pipeline reads/writes through
     // this FileManager's containerFile_, skipping over slot areas.
@@ -202,7 +223,6 @@ private:
     ProgressCallback progressCallback_;
     FragmentedWriteStats fragmentedWriteStats_{};
 
-    uint64_t container_size_param_ = 0;   // size requested at init()
     uint64_t activeSlotOffset_   = 0;   // byte offset of the slot used by readMeta()
     ECipher desiredCipher_ = ECipher::AES_256_GCM;
 };

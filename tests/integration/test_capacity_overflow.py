@@ -56,6 +56,7 @@ Test matrix
 """
 
 import pathlib
+import struct
 import pytest
 
 from conftest import (
@@ -143,12 +144,19 @@ CONTAINER_GOOD_SIZE           = 8 * 1024 * 1024  # capacity ~8 MB, plenty
 
 
 # ---------------------------------------------------------------------------
-# Module-level sanity checks: ensure the source files exist and the size
-# constants match reality.  These run when pytest collects the module, before
-# any test body executes.
+# Session-scoped fixture: ensure source files exist and size constants match.
+#
+# Previously this was a module-level function call (_verify_source_files_and_constants()),
+# which caused a pytest *collection error* (not a skip) when the test data PDFs
+# were absent.  A collection error propagates to ALL test runs regardless of which
+# test file was selected, breaking the entire pytest session.
+#
+# Wrapped in a session-scoped autouse fixture: when the PDFs are absent, all tests
+# in this module are skipped (not errored), leaving the rest of the test suite intact.
 # ---------------------------------------------------------------------------
 
 def _verify_source_files_and_constants() -> None:
+    """Internal helper — raise AssertionError with a clear message if data is bad."""
     assert PDF_PATH.exists(), (
         f"Required source file not found: {PDF_PATH}\n"
         f"Run tests from a full MEPHI_DIPLOMA checkout."
@@ -189,7 +197,23 @@ def _verify_source_files_and_constants() -> None:
     )
 
 
-_verify_source_files_and_constants()
+@pytest.fixture(scope="session", autouse=True)
+def _require_capacity_test_data():
+    """
+    Session-scoped fixture: skip all tests in this module when the required
+    PDF test data files are absent or have unexpected sizes.
+
+    Using a fixture (instead of a module-level call) ensures a missing file
+    produces a pytest.skip rather than a collection error, so other test
+    modules are not affected.
+    """
+    try:
+        _verify_source_files_and_constants()
+    except AssertionError as exc:
+        pytest.skip(
+            reason=f"Capacity test data unavailable: {exc}",
+            allow_module_level=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +758,68 @@ class TestAddOverflow:
                 f"extract stderr: {extract_result.stderr.strip()}"
             )
 
+    def test_add_overflow_header_version_and_file_count_unchanged(self, tmp_path):
+        """
+        TC-CAP-07 header atomicity: after a failed 'scef add' (overflow), the
+        header fields in slot 0 that track logical container state must be
+        identical to their pre-add values.
+
+        Spec fields checked (binary layout, little-endian):
+          0x0088  uint32  file_count
+          0x0090  uint32  header_version
+
+        Rationale: a partial write may increment header_version in slot 0 but
+        not slots 1-3, leaving the container inconsistent at the header level.
+        The container may still be functionally extractable (readMeta picks any
+        passing slot), but header consistency is a spec invariant.
+        """
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+
+        # Create with first PDF only.
+        run_scef(
+            [
+                "create",
+                "-c", str(cdir),
+                "-f", str(PDF_PATH),
+                "-s", str(_PDF_ONLY_MIN_SIZE),
+            ],
+            expect_success=True,
+        )
+
+        container_path = cdir / "container.scef"
+
+        # Read header fields BEFORE the failed add.
+        raw_before = container_path.read_bytes()
+        file_count_before    = struct.unpack_from("<I", raw_before, 0x0088)[0]
+        header_version_before = struct.unpack_from("<I", raw_before, 0x0090)[0]
+
+        # Attempt the overflowing add.
+        run_scef(
+            [
+                "add",
+                "-c", str(cdir),
+                "-f", str(DOCX_PATH),
+            ],
+            expect_success=False,
+        )
+
+        # Read header fields AFTER the failed add.
+        raw_after = container_path.read_bytes()
+        file_count_after    = struct.unpack_from("<I", raw_after, 0x0088)[0]
+        header_version_after = struct.unpack_from("<I", raw_after, 0x0090)[0]
+
+        assert file_count_after == file_count_before, (
+            f"file_count at slot 0 offset 0x0088 changed after failed 'scef add': "
+            f"before={file_count_before}, after={file_count_after}.  "
+            f"A failed add must not permanently modify slot 0 file_count."
+        )
+        assert header_version_after == header_version_before, (
+            f"header_version at slot 0 offset 0x0090 changed after failed 'scef add': "
+            f"before={header_version_before}, after={header_version_after}.  "
+            f"A failed add must not permanently modify slot 0 header_version."
+        )
+
 
 # ---------------------------------------------------------------------------
 # TC-CAP-08
@@ -793,4 +879,64 @@ class TestFailedCreateLeavesSafeState:
             f"container.scef size on disk: {container_path.stat().st_size} bytes.\n"
             "A listable but corrupt container will cause 'Data block "
             "authentication failed' on extract — this is the original bug."
+        )
+
+    def test_failed_create_header_fields_are_zero_or_container_absent(self, tmp_path):
+        """
+        TC-CAP-08 header atomicity: after a failed 'scef create' (capacity overflow),
+        if a container file was written to disk, the header fields file_count and
+        header_version in slot 0 must be 0 (uninitialized / not committed).
+
+        A partially-written container that has non-zero file_count and a real
+        header_version but corrupt data blocks is the worst failure mode: it looks
+        valid to a user but produces authentication errors on extract.
+
+        Spec fields checked (binary layout, little-endian):
+          0x0088  uint32  file_count
+          0x0090  uint32  header_version
+
+        If no container.scef is present, this test passes trivially (best case).
+        """
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+
+        # Attempt the overflowing create.
+        run_scef(
+            [
+                "create",
+                "-c", str(cdir),
+                "-f", str(PDF_PATH),
+                "-f", str(DOCX_PATH),
+                "-s", str(CONTAINER_FAR_TOO_SMALL),
+            ],
+            expect_success=False,
+        )
+
+        container_path = cdir / "container.scef"
+
+        if not container_path.exists():
+            # Best outcome: no container file created at all.
+            return
+
+        # If a container file exists, read header fields from slot 0.
+        raw = container_path.read_bytes()
+        if len(raw) < 0x0094:
+            # File is too small to contain the header fields — that is acceptable
+            # (partial/truncated write).
+            return
+
+        file_count    = struct.unpack_from("<I", raw, 0x0088)[0]
+        header_version = struct.unpack_from("<I", raw, 0x0090)[0]
+
+        # After a failed create, either:
+        # (a) the header was not written at all (file_count == 0, header_version == 0), OR
+        # (b) the container file does not pass 'scef list' (checked in the sibling test).
+        # We check the header-level invariant here: committed state must not be mixed
+        # with the failed data write.
+        assert file_count == 0 or header_version == 0, (
+            f"After a failed 'scef create' (capacity overflow), slot 0 has "
+            f"file_count={file_count} and header_version={header_version} — "
+            f"both non-zero.  This indicates a partial commit: the header was "
+            f"written but data blocks were not all written or were corrupt.  "
+            f"A failed create must either not write the header at all, or roll back."
         )

@@ -9,7 +9,19 @@ import pathlib
 import sys
 import tempfile
 
-SCEF_BIN = pathlib.Path(__file__).resolve().parent.parent.parent / "build" / "debug" / "scef.exe"
+# Locate the scef binary in a cross-platform manner.
+# On Windows the executable has a .exe suffix; on Linux/macOS it does not.
+_BUILD_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "build" / "debug"
+_SCEF_BIN_WIN   = _BUILD_DIR / "scef.exe"
+_SCEF_BIN_POSIX = _BUILD_DIR / "scef"
+
+if _SCEF_BIN_WIN.exists():
+    SCEF_BIN = _SCEF_BIN_WIN
+elif _SCEF_BIN_POSIX.exists():
+    SCEF_BIN = _SCEF_BIN_POSIX
+else:
+    # Fallback: use platform heuristic so the error message is informative.
+    SCEF_BIN = _SCEF_BIN_WIN if sys.platform == "win32" else _SCEF_BIN_POSIX
 DEFAULT_PASSWORD = "integration_test_password_123"
 DEFAULT_CONTAINER_SIZE = 4 * 1024 * 1024
 

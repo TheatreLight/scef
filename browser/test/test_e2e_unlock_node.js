@@ -78,10 +78,10 @@ async function main() {
     console.log('Computed HMAC:', bytesToHex(computedHmac));
     console.log('Stored HMAC: ', bytesToHex(storedHmac));
 
-    let match = true;
-    for (let i = 0; i < 32; i++) {
-        if (computedHmac[i] !== storedHmac[i]) { match = false; break; }
-    }
+    const match = cryptoNode.timingSafeEqual(
+        Buffer.from(computedHmac),
+        Buffer.from(storedHmac)
+    );
     if (!match) {
         console.log('FAIL: HMAC mismatch — wrong password or corrupted');
         process.exit(1);

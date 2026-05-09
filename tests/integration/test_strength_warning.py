@@ -5,10 +5,17 @@ import subprocess
 from conftest import DEFAULT_CONTAINER_SIZE, SCEF_BIN, make_text_file
 
 
+# KDF flags standardized to match every other test file (conftest, test_kdf_profiles,
+# run_bit_flip_test).  The flags --kdf-m-cost / --kdf-t-cost / --kdf-parallelism are
+# listed as aliases in the help text but are NOT parsed by foundKey() in main.cpp —
+# using them caused the KDF args to be silently ignored, leaving the tests running
+# with the slow default Standard profile (m=1024 MiB) instead of the intended fast
+# values.  Using m=64 MiB keeps derivation time under ~0.1s while still exercising
+# the strength-warning path (64 MiB is above the 8 MiB warning threshold).
 FAST_STRENGTH_KDF_ARGS = [
-    "--kdf-m-cost", "64",
-    "--kdf-t-cost", "1",
-    "--kdf-parallelism", "1",
+    "--kdf-m", "64",
+    "--kdf-t", "1",
+    "--kdf-p", "1",
 ]
 
 

@@ -12,7 +12,7 @@
 
 #include "DriveListModel.h"
 #include "FileListModel.h"
-#include "PasswordStrengthEstimator.h"
+// PasswordStrengthEstimator.h is included only in the .cpp (used only in method bodies).
 
 class FileManager;
 
@@ -22,14 +22,17 @@ class ScefController : public QObject {
     Q_PROPERTY(DriveListModel* driveListModel READ driveListModel CONSTANT)
     Q_PROPERTY(bool containerOpen READ isContainerOpen NOTIFY containerOpenChanged)
     Q_PROPERTY(bool busy READ isBusy NOTIFY busyChanged)
-    Q_PROPERTY(QString currentContainerPath READ currentContainerPath NOTIFY containerOpenChanged)
+    // currentContainerPath has its own NOTIFY signal (not piggy-backed on containerOpenChanged).
+    Q_PROPERTY(QString currentContainerPath READ currentContainerPath NOTIFY currentContainerPathChanged)
     Q_PROPERTY(bool benchEnabled READ benchEnabled WRITE setBenchEnabled NOTIFY benchEnabledChanged)
 
 public:
     explicit ScefController(QObject* parent = nullptr);
     ~ScefController() override;
 
-    Q_INVOKABLE QString createContainer(const QString& destDir,
+    // containerFilePath: full path to the new container file (e.g. "/mnt/usb/container.scef").
+    // QML constructs this from the chosen directory + defaultContainerName(dir) or user input.
+    Q_INVOKABLE QString createContainer(const QString& containerFilePath,
                                          const QStringList& files,
                                          const QString& password,
                                          quint64 sizeMB,
@@ -42,6 +45,7 @@ public:
     Q_INVOKABLE QVariantMap estimatePasswordStrength(const QString& password,
                                                       int kdfProfileIndex) const;
 
+    // containerPath: full path to an existing .scef file.
     Q_INVOKABLE QString openContainer(const QString& containerPath,
                                        const QString& password);
 
@@ -56,6 +60,18 @@ public:
     Q_INVOKABLE QStringList listLogFiles() const;
     Q_INVOKABLE QString readLogFile(const QString& path, qint64 maxBytes = 1048576) const;
 
+    // Returns the filename portion (no directory) of the next non-colliding container path
+    // inside dir. E.g. "container.scef" or "container_1.scef".
+    Q_INVOKABLE QString defaultContainerName(const QString& dir) const;
+
+    // Delegates to DriveListModel::containerFilesAtRow(row).
+    // Returns a list of absolute paths to *.scef files in the drive root at the given row.
+    Q_INVOKABLE QStringList containerFilesAtRow(int row) const;
+
+    // Validate a proposed container filename.
+    // Returns empty string on success; returns a human-readable error message on failure.
+    Q_INVOKABLE QString validateContainerName(const QString& name) const;
+
     FileListModel* fileListModel() const;
     DriveListModel* driveListModel() const;
     bool isContainerOpen() const;
@@ -68,17 +84,29 @@ signals:
     void containerOpenChanged();
     void busyChanged();
     void benchEnabledChanged();
+    void currentContainerPathChanged();
     void operationFinished(const QString& error);
+    // fraction: 0.0–1.0 when fractionMeaningful is true.
+    // fraction: -1.0 signals "indeterminate" — QML should hide the progress percent.
     void progressChanged(const QString& stageLabel, double fraction);
 
 private:
     void installProgressCallback(FileManager* fm);
+
     // Run heavy FileManager work on a background thread.
-    // workFn: called on worker thread with the FileManager pointer.
-    // onSuccess: called on main thread if work succeeded (fm is alive).
+    //
+    // fm:             FileManager to transfer to the worker (may be null — worker creates its own).
+    // workFn:         Called on the worker thread with the FileManager pointer.
+    // onSuccess:      Called on the main thread if workFn completed without exception;
+    //                 self->fileManager_ has already been restored at that point.
+    // restoreOnError: If true, fileManager_ is also restored on error (add/extract keep the
+    //                 container open). If false, fileManager_ is left null on error
+    //                 (create/open — container is not considered open after failure).
     void runAsync(std::unique_ptr<FileManager> fm,
                   std::function<void(FileManager*)> workFn,
-                  std::function<void()> onSuccess);
+                  std::function<void()> onSuccess,
+                  bool restoreOnError = false);
+
     void refreshFileList();
 
     std::unique_ptr<FileManager> fileManager_;

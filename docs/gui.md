@@ -9,7 +9,7 @@ Theme: Material Dark, primary color Red, accent color LightGreen.
 
 ```mermaid
 graph TD
-    QML["QML Pages\n(StartPage, CreatePage,\nFileListPage, PasswordDialog)"]
+    QML["QML Pages\n(StartPage, CreatePage,\nFileListPage, LogsPage, PasswordDialog)"]
     SC["ScefController\n(Q_OBJECT facade)"]
     FM["FileManager\n(scef_lib)"]
     FLM["FileListModel\n(QAbstractListModel)"]
@@ -45,6 +45,7 @@ Source: `gui/ScefController.h`
 | `containerOpen` | `bool` | `containerOpenChanged()` | Whether a container is currently open |
 | `busy` | `bool` | `busyChanged()` | Whether a background operation is running |
 | `currentContainerPath` | `QString` | `containerOpenChanged()` | Directory path of the open container |
+| `benchEnabled` | `bool` | `benchEnabledChanged()` | Whether `LOG_BENCH` messages are written to the log |
 
 ### Signals
 
@@ -53,6 +54,8 @@ Source: `gui/ScefController.h`
 | `containerOpenChanged()` | Emitted when container is opened or closed |
 | `busyChanged()` | Emitted when a background task starts or finishes |
 | `operationFinished(QString error)` | Emitted after every async operation; `error` is empty on success |
+| `benchEnabledChanged()` | Emitted when the `benchEnabled` property changes |
+| `progressChanged(QString stageLabel, double fraction)` | Emitted by the worker thread at each pipeline stage; `fraction` is 0.0–1.0 |
 
 ### Invokable Methods
 
@@ -65,7 +68,8 @@ Q_INVOKABLE QString createContainer(
     int kdfProfileIndex = 0,     // 0=Standard, 1=Fast, 2=High, 3=Browser, 4=Custom
     int kdfM_MiB = 64,           // used only when kdfProfileIndex == 4
     int kdfT = 3,
-    int kdfP = 4
+    int kdfP = 4,
+    int cipherIndex = 0          // 0=AES-256-GCM, 1=Kuznechik-GCM
 );
 // Returns empty string on success, error message on synchronous failure.
 // Async errors come via operationFinished(error).
@@ -83,6 +87,21 @@ Q_INVOKABLE QString extractFiles(
 );
 
 Q_INVOKABLE void closeContainer();
+
+Q_INVOKABLE QVariantMap estimatePasswordStrength(const QString& password, int kdfProfileIndex) const;
+// Estimate password strength relative to the given KDF profile.
+// Returns a QVariantMap with keys: score (int 0-4), bits (double), meetsRecommendation (bool),
+// warning (QString), crackTimeOffline (QString).
+
+Q_INVOKABLE QString logDirPath() const;
+// Return the absolute path of the log directory as a string.
+
+Q_INVOKABLE QStringList listLogFiles() const;
+// Return a list of absolute paths of all .log files in the log directory,
+// sorted by modification time (newest first).
+
+Q_INVOKABLE QString readLogFile(const QString& path, qint64 maxBytes = 1048576) const;
+// Read up to maxBytes bytes from the log file at path and return as a QString.
 ```
 
 **Profile index mapping** (`gui/ScefController.cpp:64-71`):
@@ -116,9 +135,11 @@ The `QPointer<ScefController>` guard ensures the main-thread callback is a no-op
 
 ### Password Security
 
-Passwords are stored as `std::string currentPassword_` in `ScefController`. On `closeContainer()` and in the destructor, `scrubPassword()` is called, which uses `Botan::secure_scrub_memory` before clearing the string.
+Passwords are **never stored** in `ScefController`. On each operation the password `QString` is converted to `Botan::secure_vector<char>` by `securePasswordFromQString()` (`ScefController.cpp`) and passed directly to `FileManager::init()`. The controller does not retain it after the call returns.
 
-Source: `gui/ScefController.cpp:282-288`
+`FileManager` holds the password in a `Botan::secure_vector<char>` member (`password_`) that is automatically zeroed by Botan's secure allocator when the `FileManager` is destroyed or goes out of scope. No explicit scrub call is required in the controller.
+
+Source: `gui/ScefController.cpp` (`securePasswordFromQString`), `include/FileManager.h` (`password_` field)
 
 ---
 
@@ -194,12 +215,13 @@ Q_INVOKABLE bool hasContainerAtRow(int row) const;
 
 ### Main.qml
 
-Root window. 900×600 pixels. Material Dark theme (Red primary, LightGreen accent).
+Root window. 960×900 pixels. Material Dark theme (Red primary, LightGreen accent).
 
-Contains a `StackView` with three components:
+Contains a `StackView` with four components:
 - `StartPage` — initial page
 - `CreatePage` — pushed from StartPage
 - `FileListPage` — pushed after successful create or open
+- `LogsPage` — pushed from FileListPage (view log files)
 
 ```mermaid
 stateDiagram-v2
@@ -208,6 +230,8 @@ stateDiagram-v2
     StartPage --> FileListPage : open succeeds (operationFinished empty)
     CreatePage --> StartPage : Back / success
     FileListPage --> StartPage : Back (closeContainer)
+    FileListPage --> LogsPage : Logs button
+    LogsPage --> FileListPage : Back
 ```
 
 ### StartPage.qml
@@ -258,6 +282,18 @@ stateDiagram-v2
 **Purpose:** Reusable modal password dialog. Used by `StartPage` for open operations.
 
 Exposes `property string password`. On `accepted`, the caller reads the password, clears it immediately after use.
+
+### LogsPage.qml
+
+**Purpose:** Browse and view log files written by the running `scef-gui` instance.
+
+**Key UI elements:**
+- List of log files (`ListView` populated via `controller.listLogFiles()`)
+- Selected log file content displayed in a scrollable text area
+- Loaded via `controller.readLogFile(path)` (up to 1 MiB by default)
+- "Refresh" button to reload the file list
+
+---
 
 ### FileListPage.qml
 

@@ -89,9 +89,18 @@ class TestWrongPassword:
 
     def test_wrong_password_does_not_extract_garbage(self, tmp_path):
         """
-        If extract with a wrong password somehow writes a file, its content
-        must not match the original plaintext — AES-GCM authentication must
-        be enforced.
+        AES-GCM authentication must be enforced: extracting with a wrong password
+        must exit non-zero AND must not write any plaintext to disk.
+
+        Security properties tested (both unconditional):
+          1. returncode != 0  — the operation must be rejected.
+          2. output file either does not exist or has size 0  — no plaintext written.
+
+        The previous implementation used an if/else branch that allowed the test
+        to pass trivially when the correct implementation wrote no file:
+        the else-branch only asserted returncode != 0, which was already guaranteed
+        by expect_success=False (not actually an assertion).  This version makes
+        both properties unconditional so the test fails if either is violated.
         """
         cdir = tmp_path / "c"
         cdir.mkdir()
@@ -107,14 +116,19 @@ class TestWrongPassword:
             expect_success=False,
         )
 
+        # Property 1: wrong password must always produce a non-zero exit code.
+        assert result.returncode != 0, (
+            "extract with wrong password must exit non-zero; "
+            "got returncode=0 — authentication was not enforced"
+        )
+
+        # Property 2: no plaintext must be written to disk.
         extracted = outdir / "sensitive.bin"
-        if extracted.exists():
-            actual = extracted.read_bytes()
-            assert actual != expected, (
-                "Wrong password produced correct plaintext — authentication not enforced"
-            )
-        else:
-            assert result.returncode != 0
+        assert not extracted.exists() or extracted.stat().st_size == 0, (
+            "extract with wrong password wrote a non-empty file to disk — "
+            "plaintext confidentiality is violated regardless of whether the "
+            "content happens to match the original"
+        )
 
     def test_correct_password_after_wrong_attempt(self, tmp_path):
         """

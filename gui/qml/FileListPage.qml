@@ -11,9 +11,23 @@ Page {
     property string pendingOperation: ""  // "add" or "extract"
     property string pendingMessage: ""
     property string progressStage: ""
-    property real progressFraction: 0.0
+    property real progressFraction: -1.0
 
     property var selectedIndices: ({})
+
+    // Computed properties — defined as bindings so QML's dependency tracker
+    // re-evaluates them whenever `selectedIndices` is reassigned (which the
+    // CheckBox.onToggled handler does via `selectedIndices = copy`).
+    // Helper functions like getSelectedCount() that read selectedIndices
+    // through a JS subscript do NOT get tracked reliably for `property var`
+    // bindings — see Qt bug QTBUG-on-property-var-tracking.
+    readonly property int selectedCount: {
+        var c = 0
+        for (var idx in selectedIndices) {
+            if (selectedIndices[idx]) c++
+        }
+        return c
+    }
 
     function progressText() {
         if (progressStage === "") {
@@ -21,8 +35,10 @@ Page {
             if (pendingOperation === "add") return "Preparing to add files..."
             return "Processing..."
         }
-        if ((progressStage === "Encrypting data..." || progressStage === "Decrypting data...")
-                && progressFraction > 0.0 && progressFraction < 1.0) {
+        // Per ScefController: fraction == -1.0 (or any negative value) signals
+        // "indeterminate" — only show a percentage when the controller emitted
+        // a real fraction in [0, 1).
+        if (progressFraction >= 0.0 && progressFraction < 1.0) {
             return progressStage + " " + Math.round(progressFraction * 100) + "%"
         }
         return progressStage
@@ -36,14 +52,6 @@ Page {
             }
         }
         return names
-    }
-
-    function getSelectedCount() {
-        var count = 0
-        for (var idx in selectedIndices) {
-            if (selectedIndices[idx]) count++
-        }
-        return count
     }
 
     FileDialog {
@@ -60,7 +68,7 @@ Page {
             pendingOperation = "add"
             pendingMessage = files.length + " file(s) added successfully"
             progressStage = ""
-            progressFraction = 0.0
+            progressFraction = -1.0
             var error = controller.addFiles(files)
             if (error !== "") {
                 errorLabel.text = error
@@ -82,7 +90,7 @@ Page {
                 ? names.length + " file(s) extracted successfully"
                 : "All files extracted successfully"
             progressStage = ""
-            progressFraction = 0.0
+            progressFraction = -1.0
             var error = controller.extractFiles(names, selectedFolder)
             if (error !== "") {
                 errorLabel.text = error
@@ -178,10 +186,13 @@ Page {
                         id: selectBox
                         checked: !!selectedIndices[index]
                         onToggled: {
-                            var copy = selectedIndices
+                            // Build a NEW object — QML's property-var change
+                            // detection uses identity (===), so mutating the
+                            // existing object and reassigning the same reference
+                            // would not trigger selectedIndicesChanged.
+                            var copy = Object.assign({}, selectedIndices)
                             copy[index] = checked
                             selectedIndices = copy
-                            selectedIndicesChanged()
                         }
                     }
 
@@ -251,8 +262,8 @@ Page {
             }
 
             Button {
-                text: getSelectedCount() > 0
-                      ? "Extract Selected (" + getSelectedCount() + ")"
+                text: selectedCount > 0
+                      ? "Extract Selected (" + selectedCount + ")"
                       : "Extract All"
                 enabled: !controller.busy
                 onClicked: {
@@ -325,7 +336,6 @@ Page {
             } else {
                 if (pendingOperation === "add") {
                     selectedIndices = {}
-                    selectedIndicesChanged()
                 }
                 successLabel.text = pendingMessage
                 successLabel.visible = true

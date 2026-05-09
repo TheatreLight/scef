@@ -13,6 +13,7 @@
 #include <botan/secmem.h>
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -26,6 +27,11 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------------------
 
 namespace {
+
+uint16_t le16_at(const uint8_t* buf, size_t offset) {
+    return static_cast<uint16_t>(buf[offset]) |
+           (static_cast<uint16_t>(buf[offset + 1]) << 8);
+}
 
 uint32_t le32_at(const uint8_t* buf, size_t offset) {
     return static_cast<uint32_t>(buf[offset]) |
@@ -191,6 +197,87 @@ TEST_F(HeaderLayoutTest, FileTableSizeIsUint32_Not64) {
            "would be zero (upper bits). Spec says max_table_size (65536) should be there.";
 }
 
+// Spec Table 4.2: magic is 4 bytes 'S','C','E','F' at offset 0x0000.
+TEST_F(HeaderLayoutTest, MagicAt0x0000_IsSCEF) {
+    header_.serialize();
+
+    EXPECT_EQ(buf()[0x0000], static_cast<uint8_t>('S'))
+        << "Spec Table 4.2: magic byte 0 at 0x0000 must be 'S'";
+    EXPECT_EQ(buf()[0x0001], static_cast<uint8_t>('C'))
+        << "Spec Table 4.2: magic byte 1 at 0x0001 must be 'C'";
+    EXPECT_EQ(buf()[0x0002], static_cast<uint8_t>('E'))
+        << "Spec Table 4.2: magic byte 2 at 0x0002 must be 'E'";
+    EXPECT_EQ(buf()[0x0003], static_cast<uint8_t>('F'))
+        << "Spec Table 4.2: magic byte 3 at 0x0003 must be 'F'";
+}
+
+// Spec Table 4.2: header_size is uint32_le = 4096 at offset 0x0008.
+TEST_F(HeaderLayoutTest, HeaderSizeAt0x0008_Is4096) {
+    header_.serialize();
+
+    uint32_t val = le32_at(buf(), 0x0008);
+    EXPECT_EQ(val, 4096u)
+        << "Spec Table 4.2: header_size (uint32_le) at 0x0008 must be 4096. "
+           "A regression that writes wrong header_size would break all slot offset computations.";
+}
+
+// Spec Table 4.2: cipher_id is uint8 at offset 0x000C; default must be 0x01 (AES-256-GCM).
+TEST_F(HeaderLayoutTest, CipherIdAt0x000C_DefaultIsAES) {
+    header_.serialize();
+
+    EXPECT_EQ(buf()[0x000C], 0x01u)
+        << "Spec Table 4.2: cipher_id at 0x000C must be 0x01 (AES-256-GCM) by default. "
+           "Got: 0x" << std::hex << static_cast<unsigned>(buf()[0x000C]);
+}
+
+// Spec Table 4.2: kdf_profile_id is uint16_le at offset 0x000E.
+// Default Header has EKDFProfile::Standard = 3.
+TEST_F(HeaderLayoutTest, KdfProfileIdAt0x000E_DefaultIsStandard) {
+    header_.serialize();
+
+    uint16_t val = le16_at(buf(), 0x000E);
+    EXPECT_EQ(val, static_cast<uint16_t>(EKDFProfile::Standard))
+        << "Spec Table 4.2: kdf_profile_id (uint16_le) at 0x000E must be 3 (Standard) by default. "
+           "A big-endian serialization bug would produce 0x0300 instead of 0x0003.";
+}
+
+// Spec Table 4.2: kdf_m_kib is uint32_le at offset 0x0010.
+TEST_F(HeaderLayoutTest, KdfMKibAt0x0010_IsUint32Le) {
+    header_.serialize();
+
+    // Read the raw value and verify it matches the getter (roundtrip).
+    uint32_t raw_val = le32_at(buf(), 0x0010);
+    EXPECT_EQ(raw_val, header_.getKdfMKib())
+        << "Spec Table 4.2: kdf_m_kib (uint32_le) at 0x0010 must equal the header's kdf_m_kib field. "
+           "A big-endian serialization bug would produce a byte-swapped value.";
+    EXPECT_GT(raw_val, 0u)
+        << "kdf_m_kib must be non-zero (Argon2id requires at least 1 KiB).";
+}
+
+// Spec Table 4.2: kdf_t is uint32_le at offset 0x0014.
+TEST_F(HeaderLayoutTest, KdfTAt0x0014_IsUint32Le) {
+    header_.serialize();
+
+    uint32_t raw_val = le32_at(buf(), 0x0014);
+    EXPECT_EQ(raw_val, header_.getKdfT())
+        << "Spec Table 4.2: kdf_t (uint32_le) at 0x0014 must equal the header's kdf_t field. "
+           "Endianness regression would produce a byte-swapped value.";
+    EXPECT_GE(raw_val, 1u)
+        << "kdf_t must be >= 1 (Argon2id requires at least 1 iteration).";
+}
+
+// Spec Table 4.2: kdf_p is uint32_le at offset 0x0018.
+TEST_F(HeaderLayoutTest, KdfPAt0x0018_IsUint32Le) {
+    header_.serialize();
+
+    uint32_t raw_val = le32_at(buf(), 0x0018);
+    EXPECT_EQ(raw_val, header_.getKdfP())
+        << "Spec Table 4.2: kdf_p (uint32_le) at 0x0018 must equal the header's kdf_p field. "
+           "Endianness regression would produce a byte-swapped value.";
+    EXPECT_GE(raw_val, 1u)
+        << "kdf_p must be >= 1 (Argon2id requires at least 1 lane).";
+}
+
 // ===========================================================================
 // 2. CONTAINER ARCHITECTURE — spec 4.1
 //
@@ -223,11 +310,12 @@ TEST_F(ContainerArchTest, ContainerSizeIsFixedAtCreation) {
 
     uint64_t requested_size = 4ULL * (HEADER_SIZE + BLOCK_SIZE) + BLOCK_SIZE;
 
+    fs::path container_file = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file);
     ASSERT_GE(raw.size(), HEADER_SIZE);
     uint64_t container_size = le64_at(raw.data(), 0x0078);
 
@@ -246,11 +334,12 @@ TEST_F(ContainerArchTest, FourHeaderSlotsWithMagic) {
     fs::create_directories(cdir);
 
     uint64_t requested_container_size = 4ULL * (HEADER_SIZE + BLOCK_SIZE) + BLOCK_SIZE;
+    fs::path container_file = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), requested_container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file.string(), requested_container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file);
     ASSERT_GE(raw.size(), HEADER_SIZE);
 
     uint64_t container_size = le64_at(raw.data(), 0x0078);
@@ -280,6 +369,167 @@ TEST_F(ContainerArchTest, FourHeaderSlotsWithMagic) {
     }
 }
 
+// Spec Table 4.2: salt is 32 bytes at offset 0x001C; must be non-zero after container creation.
+// The salt is generated by CryptoManager::generateSalt() during write() — not by Header::serialize().
+// This test guards against accidental zeroing of the salt (e.g. a missing generateSalt() call).
+TEST_F(ContainerArchTest, SaltNonZeroAt0x001C_AfterCreate) {
+    fs::path src = make_input("test.bin", 64);
+    fs::path cdir = tmp_dir_ / "container_salt";
+    fs::create_directories(cdir);
+
+    uint64_t container_size = 4 * 1024 * 1024;
+    fs::path container_file_salt = cdir / CONTAINER_FILE_NAME;
+    FileManager fm;
+    fm.init({src.string()}, container_file_salt.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.write();
+
+    auto raw = read_file(container_file_salt);
+    ASSERT_GE(raw.size(), static_cast<size_t>(0x001C + 32))
+        << "Container file too small to contain salt field.";
+
+    bool all_zero = true;
+    for (size_t i = 0x001C; i < 0x001C + 32; ++i) {
+        if (raw[i] != 0) { all_zero = false; break; }
+    }
+    EXPECT_FALSE(all_zero)
+        << "Spec Table 4.2: salt (32 bytes at 0x001C) must not be all-zero after creation. "
+           "A missing generateSalt() call would leave the salt zeroed, "
+           "making every container with an empty password use the same KEK.";
+}
+
+// Spec Table 4.2: container_size is uint64_le at offset 0x0078;
+// must equal the requested size at creation.
+TEST_F(ContainerArchTest, ContainerSizeAt0x0078_MatchesRequested) {
+    fs::path src = make_input("test.bin", 64);
+    fs::path cdir = tmp_dir_ / "container_csz";
+    fs::create_directories(cdir);
+
+    uint64_t requested_size = 4 * 1024 * 1024;
+    fs::path container_file_csz = cdir / CONTAINER_FILE_NAME;
+    FileManager fm;
+    fm.init({src.string()}, container_file_csz.string(), requested_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.write();
+
+    auto raw = read_file(container_file_csz);
+    ASSERT_GE(raw.size(), static_cast<size_t>(0x0078 + 8))
+        << "Container file too small to contain container_size field.";
+
+    uint64_t stored = le64_at(raw.data(), 0x0078);
+    EXPECT_EQ(stored, requested_size)
+        << "Spec Table 4.2: container_size (uint64_le) at 0x0078 must equal the requested "
+           "container size. A regression that stores wrong container_size would break slot "
+           "offset computation on re-open.";
+}
+
+// Spec 4.1: All four 4096-byte header blocks must be byte-for-byte identical after write.
+// This guards against bugs where slot 0 receives a different header_version, salt,
+// or any other field compared to slots 1-3.
+TEST_F(ContainerArchTest, AllFourSlotsAreByteIdentical) {
+    fs::path src = make_input("test.bin", 100);
+    fs::path cdir = tmp_dir_ / "container_ident";
+    fs::create_directories(cdir);
+
+    uint64_t container_size = 4 * 1024 * 1024;
+    fs::path container_file_ident = cdir / CONTAINER_FILE_NAME;
+    FileManager fm;
+    fm.init({src.string()}, container_file_ident.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.write();
+
+    auto raw = read_file(container_file_ident);
+    ASSERT_GE(raw.size(), static_cast<size_t>(HEADER_SIZE));
+
+    uint64_t stored_size = le64_at(raw.data(), 0x0078);
+    if (stored_size == 0 || raw.size() < stored_size) {
+        GTEST_SKIP() << "container_size not set or file too small for slot identity check";
+    }
+
+    auto slot_offset = [&](int pct) -> size_t {
+        return static_cast<size_t>((stored_size * pct / 100 / HEADER_SIZE) * HEADER_SIZE);
+    };
+
+    size_t offsets[4] = {0, slot_offset(25), slot_offset(50), slot_offset(75)};
+
+    for (int i = 1; i < 4; ++i) {
+        size_t off = offsets[i];
+        ASSERT_LE(off + HEADER_SIZE, raw.size())
+            << "Slot " << i << " header block at offset " << off << " is beyond file size";
+
+        bool identical = (std::memcmp(raw.data(), raw.data() + off, HEADER_SIZE) == 0);
+        EXPECT_TRUE(identical)
+            << "Spec 4.1: Header block at slot " << i << " (offset " << off
+            << ") is not byte-identical to slot 0 (offset 0). "
+               "All four header slots must carry identical content after write().";
+    }
+}
+
+// Defensive: non-power-of-2 container size must produce valid magic at spec-formula offsets
+// AND all four header blocks must be byte-identical.
+// This guards the same class of bug as integration test F-1: a wrong slot formula only
+// diverges from the spec formula when the size is not a power-of-2 multiple of HEADER_SIZE.
+TEST_F(ContainerArchTest, AllFourSlotsAreByteIdentical_NonPowerOf2Size) {
+    fs::path src = make_input("test.bin", 100);
+    fs::path cdir = tmp_dir_ / "container_odd";
+    fs::create_directories(cdir);
+
+    // 1_000_000 is not a power-of-2 multiple of 4096, so spec formula != naive size//4 formula.
+    // Spec slot 1: (1000000*25/100/4096)*4096 = (250000/4096)*4096 = 61*4096 = 249856
+    // Naive:       1000000//4 = 250000
+    // These differ, making this size ideal for catching formula bugs.
+    constexpr uint64_t test_size = 1'000'000;
+    // Minimum container size is 4*(4096+65536) = 278528; 1_000_000 > 278528, so it fits.
+    static_assert(test_size >= 4ULL * (HEADER_SIZE + BLOCK_SIZE),
+                  "test_size must be >= MINIMAL_CONTAINER_SIZE");
+
+    fs::path container_file_odd = cdir / CONTAINER_FILE_NAME;
+    FileManager fm;
+    fm.init({src.string()}, container_file_odd.string(), test_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.write();
+
+    auto raw = read_file(container_file_odd);
+    ASSERT_GE(raw.size(), static_cast<size_t>(HEADER_SIZE));
+
+    uint64_t stored_size = le64_at(raw.data(), 0x0078);
+    if (stored_size == 0 || raw.size() < stored_size) {
+        GTEST_SKIP() << "container_size not set or file too small";
+    }
+
+    auto slot_offset = [&](int pct) -> size_t {
+        return static_cast<size_t>((stored_size * pct / 100 / HEADER_SIZE) * HEADER_SIZE);
+    };
+
+    size_t offsets[4] = {0, slot_offset(25), slot_offset(50), slot_offset(75)};
+
+    for (int i = 0; i < 4; ++i) {
+        size_t off = offsets[i];
+        ASSERT_LE(off + 4, raw.size())
+            << "Slot " << i << " at offset " << off << " is beyond file size";
+
+        // Magic check
+        EXPECT_EQ(raw[off + 0], static_cast<uint8_t>('S'))
+            << "Slot " << i << " at offset " << off << " missing magic 'S'";
+        EXPECT_EQ(raw[off + 1], static_cast<uint8_t>('C'))
+            << "Slot " << i << " at offset " << off << " missing magic 'C'";
+        EXPECT_EQ(raw[off + 2], static_cast<uint8_t>('E'))
+            << "Slot " << i << " at offset " << off << " missing magic 'E'";
+        EXPECT_EQ(raw[off + 3], static_cast<uint8_t>('F'))
+            << "Slot " << i << " at offset " << off << " missing magic 'F'";
+    }
+
+    // Byte-identity check: all four 4096-byte blocks must be identical
+    ASSERT_LE(offsets[0] + HEADER_SIZE, raw.size());
+    for (int i = 1; i < 4; ++i) {
+        size_t off = offsets[i];
+        ASSERT_LE(off + HEADER_SIZE, raw.size())
+            << "Slot " << i << " header block at offset " << off << " is beyond file size";
+
+        bool identical = (std::memcmp(raw.data() + offsets[0], raw.data() + off, HEADER_SIZE) == 0);
+        EXPECT_TRUE(identical)
+            << "Spec 4.1: Header block at slot " << i << " (offset " << off
+            << ") is not byte-identical to slot 0 (offset " << offsets[0] << ") "
+               "for non-power-of-2 container size " << test_size << ".";
+    }
+}
+
 // Spec 4.6.2: After add(), header_version must be incremented.
 TEST_F(ContainerArchTest, AddIncrementsHeaderVersion) {
     fs::path f1 = make_input("first.bin", 50);
@@ -289,22 +539,23 @@ TEST_F(ContainerArchTest, AddIncrementsHeaderVersion) {
 
     uint64_t container_size = 4 * 1024 * 1024; // 4 MiB
 
+    fs::path container_file_ver = cdir / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, container_file_ver.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
 
-    auto raw1 = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw1 = read_file(container_file_ver);
     uint32_t ver1 = le32_at(raw1.data(), 0x0090);
 
     {
         FileManager fm;
-        fm.init({f2.string()}, cdir.string());
+        fm.init({f2.string()}, container_file_ver.string());
         fm.add();
     }
 
-    auto raw2 = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw2 = read_file(container_file_ver);
     uint32_t ver2 = le32_at(raw2.data(), 0x0090);
 
     EXPECT_GT(ver2, ver1)
@@ -344,11 +595,12 @@ TEST_F(FileTableSpecTest, FileTableSizeIncludesNonceAndTag) {
     fs::create_directories(cdir);
 
     uint64_t container_size = 1024 * 1024; // 1 MiB
+    fs::path container_file_ft1 = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_ft1.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_ft1);
     ASSERT_GE(raw.size(), HEADER_SIZE);
 
     uint32_t ft_size_at_spec_offset = le32_at(raw.data(), 0x0080);
@@ -365,11 +617,12 @@ TEST_F(FileTableSpecTest, FileTableStoredInSlotNotAfterData) {
     fs::create_directories(cdir);
 
     uint64_t container_size = 1024 * 1024;
+    fs::path container_file_ft2 = cdir / CONTAINER_FILE_NAME;
     FileManager fm;
-    fm.init({src.string()}, cdir.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+    fm.init({src.string()}, container_file_ft2.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
-    auto raw = read_file(cdir / CONTAINER_FILE_NAME);
+    auto raw = read_file(container_file_ft2);
     ASSERT_GE(raw.size(), HEADER_SIZE + NONCE_SIZE + AUTH_TAG_SIZE);
 
     uint32_t ft_size = le32_at(raw.data(), 0x0080);
@@ -424,19 +677,20 @@ TEST_F(ContainerOpsTest, OriginalFileIntactAfterAdd) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath1 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, cpath1.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string());
+        fm.init({f2.string()}, cpath1.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"original.bin"}, container_dir_.string());
+        fm.init({"original.bin"}, cpath1.string());
         fm.extract(output_dir_.string());
     }
 
@@ -456,24 +710,25 @@ TEST_F(ContainerOpsTest, ThreeSequentialAddsAllExtractable) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath2 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, cpath2.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string());
+        fm.init({f2.string()}, cpath2.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({f3.string()}, container_dir_.string());
+        fm.init({f3.string()}, cpath2.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"file1.bin", "file2.bin", "file3.bin"}, container_dir_.string());
+        fm.init({"file1.bin", "file2.bin", "file3.bin"}, cpath2.string());
         fm.extract(output_dir_.string());
     }
 
@@ -495,19 +750,20 @@ TEST_F(ContainerOpsTest, MultiBlockFileIntactAfterAdd) {
 
     uint64_t container_size = 16 * 1024 * 1024;
 
+    fs::path cpath3 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+        fm.init({f1.string()}, cpath3.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string());
+        fm.init({f2.string()}, cpath3.string());
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"big.bin"}, container_dir_.string());
+        fm.init({"big.bin"}, cpath3.string());
         fm.extract(output_dir_.string());
     }
 
@@ -524,23 +780,24 @@ TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath_kuz = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
         fm.setCipher(ECipher::Kuznechik_GCM);
-        fm.init({f1.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({f1.string()}, cpath_kuz.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/true, password);
         fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({f2.string()}, container_dir_.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({f2.string()}, cpath_kuz.string(), 0, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/false, password);
         fm.add();
     }
     {
         FileManager fm;
-        fm.init({"first.bin", "second.bin"}, container_dir_.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({"first.bin", "second.bin"}, cpath_kuz.string(), 0, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/false, password);
         fm.extract(output_dir_.string());
     }
@@ -549,7 +806,7 @@ TEST_F(ContainerOpsTest, KuznechikRoundtrip) {
     EXPECT_EQ(read_file(output_dir_ / "second.bin"), c2);
 
     HeaderBuffer rawHeader{};
-    std::ifstream in(container_dir_ / CONTAINER_FILE_NAME, std::ios::binary);
+    std::ifstream in(cpath_kuz, std::ios::binary);
     ASSERT_TRUE(in.good());
     in.read(reinterpret_cast<char*>(rawHeader.data()), static_cast<std::streamsize>(rawHeader.size()));
     ASSERT_EQ(in.gcount(), static_cast<std::streamsize>(rawHeader.size()));
@@ -566,10 +823,11 @@ TEST_F(ContainerOpsTest, CorruptCipherIdInSlot0FallsBackToSlot1) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath_corrupt_src = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
         fm.setCipher(ECipher::Kuznechik_GCM);
-        fm.init({src.string()}, container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
+        fm.init({src.string()}, cpath_corrupt_src.string(), container_size, DEFAULT_MAX_TABLE_SIZE,
                 /*create_new=*/true, password);
         fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
         fm.write();
@@ -577,14 +835,15 @@ TEST_F(ContainerOpsTest, CorruptCipherIdInSlot0FallsBackToSlot1) {
 
     fs::path recovered_dir = tmp_dir_ / "recovered_container";
     fs::create_directories(recovered_dir);
-    auto raw = read_file(container_dir_ / CONTAINER_FILE_NAME);
+    auto raw = read_file(cpath_corrupt_src);
     ASSERT_GT(raw.size(), POSITION_CIPHER_ID);
     raw[POSITION_CIPHER_ID] = 0xFF;
-    write_file(recovered_dir / CONTAINER_FILE_NAME, raw);
+    fs::path cpath_corrupt_rec = recovered_dir / CONTAINER_FILE_NAME;
+    write_file(cpath_corrupt_rec, raw);
 
     {
         FileManager fm;
-        ASSERT_NO_THROW(fm.init({}, recovered_dir.string(), 0, DEFAULT_MAX_TABLE_SIZE,
+        ASSERT_NO_THROW(fm.init({}, cpath_corrupt_rec.string(), 0, DEFAULT_MAX_TABLE_SIZE,
                                 /*create_new=*/false, password));
         EXPECT_EQ(fm.getCipher(), ECipher::Kuznechik_GCM)
             << "Open must recover from slot 1 and keep the original cipher selection.";
@@ -609,7 +868,7 @@ TEST_F(ContainerOpsTest, InitDoesNotCreateContainerForRead) {
     EXPECT_FALSE(fs::exists(container_file));
 
     FileManager fm;
-    EXPECT_THROW(fm.init({}, cdir.string()), std::runtime_error)
+    EXPECT_THROW(fm.init({}, container_file.string()), std::runtime_error)
         << "Spec: init() for read operations must throw if the container does not exist.";
 
     EXPECT_FALSE(fs::exists(container_file))
@@ -673,9 +932,10 @@ TEST_F(EmptyFileTest, EmptyFileAppearsInTable) {
     write_file(nonempty_file, {0x01, 0x02, 0x03});
 
     uint64_t container_size = 4 * 1024 * 1024;
+    fs::path cpath_empty1 = container_dir_ / CONTAINER_FILE_NAME;
     FileManager fm;
     fm.init({empty_file.string(), nonempty_file.string()},
-            container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+            cpath_empty1.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
     fm.write();
 
     const auto& table = fm.getFilesTable();
@@ -703,15 +963,16 @@ TEST_F(EmptyFileTest, EmptyFileExtractedCorrectly) {
 
     uint64_t container_size = 4 * 1024 * 1024;
 
+    fs::path cpath_empty2 = container_dir_ / CONTAINER_FILE_NAME;
     {
         FileManager fm;
         fm.init({empty_file.string(), nonempty_file.string()},
-                container_dir_.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
+                cpath_empty2.string(), container_size, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true);
         fm.write();
     }
     {
         FileManager fm;
-        fm.init({"empty.bin", "data.bin"}, container_dir_.string());
+        fm.init({"empty.bin", "data.bin"}, cpath_empty2.string());
         fm.extract(output_dir_.string());
     }
 
