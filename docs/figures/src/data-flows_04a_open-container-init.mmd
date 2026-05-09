@@ -1,0 +1,6 @@
+flowchart LR
+    A["FileManager::readMeta()"] --> B["Compute 4 slot offsets<br/>from container size"]
+    B --> C["For each slot i = 0..3:<br/>read 4096 B header"]
+    C --> D{Magic valid?}
+    D -->|No, next slot| C
+    D -->|"Yes ↓"| Y["(verify KEK & HMAC)"]

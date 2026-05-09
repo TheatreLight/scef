@@ -1,0 +1,3 @@
+flowchart LR
+    A["FileManager::add()"] --> B["Resume from<br/>fileTable_.getNextWriteOffset()<br/>compute free capacity"]
+    B --> C["Validate:<br/>required encrypted bytes<br/>≤ free capacity"]

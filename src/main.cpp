@@ -2,11 +2,9 @@
 #include "cli/benchmark.h"
 #include "cli/commands.h"
 #include "cli/help.h"
-
 #include "Logger.h"
 
 #include <cstdlib>
-#include <iostream>
 #include <string_view>
 
 int main(int argc, char* argv[])

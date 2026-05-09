@@ -1,4 +1,5 @@
-#pragma once
+#ifndef CLI_PASSWORD_IO_H
+#define CLI_PASSWORD_IO_H
 
 #include <botan/secmem.h>
 
@@ -11,3 +12,5 @@ namespace cli {
 [[nodiscard]] Botan::secure_vector<char> read_password();
 
 } // namespace cli
+
+#endif // CLI_PASSWORD_IO_H

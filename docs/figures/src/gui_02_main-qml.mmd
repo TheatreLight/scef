@@ -1,0 +1,8 @@
+﻿stateDiagram-v2
+    [*] --> StartPage
+    StartPage --> CreatePage : "Create on Drive" or "Create in Directory..."
+    StartPage --> FileListPage : open succeeds (operationFinished empty)
+    CreatePage --> StartPage : Back / success
+    FileListPage --> StartPage : Back (closeContainer)
+    FileListPage --> LogsPage : Logs button
+    LogsPage --> FileListPage : Back

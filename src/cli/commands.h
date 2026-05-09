@@ -1,4 +1,5 @@
-#pragma once
+#ifndef CLI_COMMANDS_H
+#define CLI_COMMANDS_H
 
 #include "args.h"
 
@@ -11,3 +12,5 @@ int cmd_extract(ParsedArgs& args);
 int cmd_strength_only(int argc, char** argv);
 
 } // namespace cli
+
+#endif // CLI_COMMANDS_H

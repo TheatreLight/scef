@@ -1,0 +1,5 @@
+flowchart LR
+    A["FileManager::write()"] --> B["createContainerFile()<br/>pre-allocate<br/>container_size bytes"]
+    B --> C["initCryptoForCreate()<br/>generateSalt → deriveKek<br/>zero password<br/>wrapDek"]
+    C --> D["computeAndStoreHeaderHmac()<br/>HMAC-SHA256<br/>bytes [0x00..0x9F]"]
+    D --> E["writeAllSlots()<br/>Header + empty FileTable<br/>at 4 slot offsets"]

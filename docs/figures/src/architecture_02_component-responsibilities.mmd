@@ -1,0 +1,69 @@
+﻿classDiagram
+    class FileManager {
+        +init(filesList, pathToDir, containerSize, maxTableSize, createNew, password)
+        +setKdfParams(profile, m_kib, t, p)
+        +setCipher(c)
+        +setProgressCallback(cb)
+        +write()
+        +add()
+        +readMeta()
+        +extract(outputFolder)
+        +printFilesTable()
+        +getFilesTable() vector~FileEntry~
+        +setFilesList(filesList)
+        -initCryptoForCreate()
+        -validateKdfParamsAndDeriveKek()
+        -unwrapDekFromHeader()
+        -computeAndStoreHeaderHmac()
+        -verifyHeaderHmac()
+        -writeAllSlots()
+        -writeFileTableToAllSlots()
+        -writeFragmented(offset, data, size)
+        -readFragmented(offset, buf, size)
+        -skipSlots(pos) uint64
+        -bytesUntilNextSlot(cur, remaining) size_t
+    }
+
+    class CryptoManager {
+        +deriveKek(password, header)
+        +wrapDek(nonce_out, enc_dek_out, tag_out)
+        +unwrapDek(nonce, enc_dek, tag)
+        +computeHmac(data, size) array~uint8,32~
+        +encrypt(data, output, dataSize)
+        +decrypt(data, output, dataSize)
+        +generateSalt(salt)
+        -kek_ array~uint8,32~
+        -dek_ array~uint8,32~
+    }
+
+    class Header {
+        +read(buf)
+        +serialize()
+        +validate() bool
+        +storeHmac(hmac)
+        +hmacProtectedBytes() array~uint8,160~
+        +setKdfProfile(profile)
+        +setKdfMKib(m_kib)
+        +incrementHeaderVersion()
+        +getContainerSize() uint64
+        +getKdfMKib() uint32
+    }
+
+    class FileTable {
+        +addFileEntry(path, checksum, offset, size)
+        +serialize() string
+        +deserialize(data)
+        +getFilesTable() vector~FileEntry~
+        +getNextWriteOffset() uint64
+        +setNextWriteOffset(offset)
+    }
+
+    class Logger {
+        +init(mirrorToConsole, logDir)
+        +setLevel(level)
+        +log(level, fmt, ...)
+    }
+
+    FileManager --> CryptoManager
+    FileManager --> Header
+    FileManager --> FileTable

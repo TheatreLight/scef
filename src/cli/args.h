@@ -1,7 +1,7 @@
-#pragma once
+#ifndef CLI_ARGS_H
+#define CLI_ARGS_H
 
 #include "enums/ECiphers.h"
-#include "enums/EKDFProfile.h"
 
 #include <cstdint>
 #include <optional>
@@ -50,3 +50,5 @@ namespace cli {
                                                std::string& out_path);
 
 } // namespace cli
+
+#endif // CLI_ARGS_H

@@ -1,0 +1,9 @@
+﻿flowchart TD
+    LOAD["Read from header:\nnonce, encrypted_dek, dek_auth_tag"]
+    DEC["AES-256-GCM decrypt(key=KEK, iv=nonce, ct=enc_dek||tag)"]
+    FAIL{Auth OK?}
+    OK["Store 32-byte DEK in dek_\ndek_ready_ = true"]
+    ERR["throw: Wrong password: DEK authentication failed"]
+    LOAD --> DEC --> FAIL
+    FAIL -->|Yes| OK
+    FAIL -->|No| ERR

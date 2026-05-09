@@ -1,0 +1,8 @@
+﻿flowchart TD
+    DEK["Generate 32-byte random DEK\n(Botan::AutoSeeded_RNG)"]
+    NONCE["Generate 12-byte random nonce"]
+    ENC["AES-256-GCM encrypt(key=KEK, iv=nonce, pt=DEK)\noutput: ciphertext(32B) + tag(16B)"]
+    STORE["header.setDekNonce\nheader.setEncryptedDek\nheader.setDekAuthTag"]
+    DEK --> ENC
+    NONCE --> ENC
+    ENC --> STORE

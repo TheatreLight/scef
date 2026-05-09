@@ -1,0 +1,23 @@
+﻿graph TD
+    app["app.js\n(orchestration)"]
+    header["header.js\n(binary parser)"]
+    kdf["kdf.js\n(Argon2id)"]
+    crypto["crypto.js\n(WebCrypto)"]
+    filetable["filetable.js\n(file table)"]
+    download["download.js\n(chunk decrypt + download)"]
+    ui["ui.js\n(DOM helpers)"]
+
+    argon2["vendor/argon2.umd.min.js\n(hash-wasm WASM)"]
+    sha256["vendor/sha256.umd.min.js\n(hash-wasm SHA-256)"]
+    jszip["vendor/jszip.min.js\n(ZIP archive)"]
+
+    app --> header
+    app --> kdf
+    app --> crypto
+    app --> filetable
+    app --> download
+    app --> ui
+    kdf --> argon2
+    download --> crypto
+    download --> sha256
+    download --> jszip

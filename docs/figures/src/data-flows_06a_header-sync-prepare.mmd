@@ -1,0 +1,7 @@
+flowchart LR
+    A["Data written to container<br/>or file table changed"]
+    B["header_.incrementHeaderVersion()"]
+    C["fileTable_.serialize()<br/>→ JSON string"]
+    D["crypto_->encrypt(jsonStr)<br/>→ encTable<br/>header_.setFileTableSize(encSize)"]
+
+    A --> B --> C --> D

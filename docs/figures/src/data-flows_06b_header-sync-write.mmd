@@ -1,0 +1,6 @@
+flowchart LR
+    E["computeAndStoreHeaderHmac()<br/>header_.serialize()<br/>HMAC(bytes[0..0x9F])<br/>→ header_.storeHmac"]
+    F["For i in 0..3:<br/>writeHeaderAt(slotOffsets_[i])<br/>writeFileTableAt(slotOffsets_[i], encTable)"]
+    G["containerFile_.syncToDevice()"]
+
+    E --> F --> G

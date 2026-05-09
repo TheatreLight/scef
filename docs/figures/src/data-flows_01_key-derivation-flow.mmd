@@ -1,0 +1,10 @@
+﻿flowchart TD
+    PW["User password (Botan::secure_vector~char~)"]
+    SALT["32-byte random salt\n(CryptoManager::generateSalt)"]
+    ARGON["Argon2id KDF\n(Botan::PasswordHashFamily)\nm_kib, t, p from header"]
+    KEK["32-byte KEK\nkey-encryption key\nkek_ in CryptoManager"]
+    SCRUB["Botan::secure_scrub_memory\n(password zeroed)"]
+    PW --> ARGON
+    SALT --> ARGON
+    ARGON --> KEK
+    PW --> SCRUB

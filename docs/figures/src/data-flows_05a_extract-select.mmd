@@ -1,0 +1,10 @@
+flowchart LR
+    A["FileManager::extract(outputFolder)"]
+    B{filesList_ empty?}
+    C["Extract all files<br/>from fileTable_"]
+    D["Extract only requested<br/>file names"]
+    E["For each file:<br/>safeFilename = path.filename()<br/>open output file"]
+
+    A --> B
+    B -->|Yes| C --> E
+    B -->|No| D --> E

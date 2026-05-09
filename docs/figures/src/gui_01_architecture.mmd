@@ -1,0 +1,16 @@
+﻿graph TD
+    QML["QML Pages\n(StartPage, CreatePage,\nFileListPage, LogsPage, PasswordDialog)"]
+    SC["ScefController\n(Q_OBJECT facade)"]
+    FM["FileManager\n(scef_lib)"]
+    FLM["FileListModel\n(QAbstractListModel)"]
+    DLM["DriveListModel\n(QAbstractListModel)"]
+    BG["QThread worker\n(heavy I/O on background thread)"]
+
+    QML -->|Q_INVOKABLE calls| SC
+    SC --> FM
+    SC --> BG
+    SC --> FLM
+    SC --> DLM
+    FLM -->|model data| QML
+    DLM -->|model data| QML
+    BG -->|QMetaObject::invokeMethod| SC
