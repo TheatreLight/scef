@@ -1,6 +1,0 @@
-graph LR
-    S0["SLOT 0 @ offset 0\nHeader (4096 B) + FileTable (≤65536 B)"]
-    D01["Data blocks\n(between slot 0 end and slot 1 start)"]
-    S1["SLOT 1 @ ~25% of container\nHeader (4096 B) + FileTable (≤65536 B)"]
-    D12["Data blocks\n(between slot 1 end and slot 2 start)"]
-    S0 --> D01 --> S1 --> D12

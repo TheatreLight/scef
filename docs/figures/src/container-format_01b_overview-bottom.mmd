@@ -1,6 +1,0 @@
-graph LR
-    S2["SLOT 2 @ ~50% of container\nHeader (4096 B) + FileTable (≤65536 B)"]
-    D23["Data blocks\n(between slot 2 end and slot 3 start)"]
-    S3["SLOT 3 @ ~75% of container\nHeader (4096 B) + FileTable (≤65536 B)"]
-    D3["Data blocks\n(after slot 3, until container end)"]
-    S2 --> D23 --> S3 --> D3

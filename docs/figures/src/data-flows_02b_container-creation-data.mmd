@@ -1,3 +1,0 @@
-flowchart LR
-    F["writeChunks(dataStart)<br/>for each file:<br/>encrypt BLOCK_SIZE chunks<br/>updateChecksum + writeFragmented"] --> G["fileTable<br/>.setNextWriteOffset(endPos)"]
-    G --> H["writeFileTableToAllSlots()<br/>serialize → encrypt<br/>update 4 slots<br/>increment HeaderVersion + HMAC"]

@@ -1,3 +1,0 @@
-flowchart LR
-    I{recovered?} -->|Yes| J["readFilesTable()"]
-    I -->|No, all 4 slots failed| K["throw: wrong password<br/>or corrupted container"]
