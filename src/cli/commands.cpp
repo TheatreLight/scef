@@ -1,23 +1,21 @@
 #include "commands.h"
 
 #include "args.h"
-#include "password_io.h"
-
+#include "BrowserViewer.h"
 #include "ContainerName.h"
 #include "FileManager.h"
 #include "Header.h"
 #include "KdfProfiles.h"
 #include "Logger.h"
 #include "PasswordStrengthEstimator.h"
+#include "password_io.h"
 
 #include <botan/mem_ops.h>
 #include <botan/secmem.h>
 
 #include <cstdlib>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
-#include <string_view>
 
 #ifdef _WIN32
 #include <io.h>
@@ -243,6 +241,21 @@ int cmd_create(ParsedArgs& args)
         fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
         fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
         fileManager.write();
+
+        if (!args.noBrowserViewer) {
+            try {
+                const auto sourceDir = scef::getExecutableDir();
+                const auto destDir = std::filesystem::path(containerFilePath).parent_path();
+                const auto result = scef::copyBrowserViewer(sourceDir, destDir);
+                if (!result.success) {
+                    LOG_ERROR("browser viewer copy failed: %s", result.errorMessage.c_str());
+                    return EXIT_FAILURE;
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR("browser viewer copy failed: %s", e.what());
+                return EXIT_FAILURE;
+            }
+        }
     } catch (const std::exception& e) {
         LOG_ERROR("create failed: %s", e.what());
         return EXIT_FAILURE;

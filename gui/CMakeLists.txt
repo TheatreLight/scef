@@ -31,3 +31,13 @@ target_link_libraries(scef-gui PRIVATE
 set_target_properties(scef-gui PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
+
+if(BROWSER_VIEWER_BUILD)
+    add_dependencies(scef-gui browser_viewer)
+
+    add_custom_command(TARGET scef-gui POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/browser/dist/index.html"
+                "$<TARGET_FILE_DIR:scef-gui>/index.html"
+        VERBATIM)
+endif()

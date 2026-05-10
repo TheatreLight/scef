@@ -1,5 +1,4 @@
 #include "help.h"
-
 #include "Header.h"
 
 #include <iostream>
@@ -48,6 +47,11 @@ void print_help()
               << "Cipher options (create only):\n"
               << "  --cipher <name>           aes, aes-256-gcm, kuznechik, kuznyechik, gost\n"
               << "                            (default: aes)\n"
+              << "\n"
+              << "Browser viewer options (create only):\n"
+              << "  --no-browser-viewer       Do not copy index.html next to the new container.\n"
+              << "                            Default: copy index.html (located next to the scef\n"
+              << "                            executable). Fails if the file is missing.\n"
               << "\n"
               << "  --help, -h    Show this help\n"
               << "  --version     Show version\n";

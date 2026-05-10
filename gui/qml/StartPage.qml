@@ -13,6 +13,7 @@ Page {
     property int driveListRevision: 0
     property string progressStage: ""
     property real progressFraction: 0.0
+    property bool includeBrowserViewer: true
 
     function progressText() {
         if (progressStage === "") {
@@ -95,7 +96,7 @@ Page {
 
         onAccepted: {
             var drivePath = controller.driveListModel.pathAtRow(selectedDriveIndex)
-            stackView.push(createPage, { "initialDestDir": drivePath })
+            stackView.push(createPage, { "initialDestDir": drivePath, "includeBrowserViewer": startPageRoot.includeBrowserViewer })
         }
     }
 
@@ -103,7 +104,7 @@ Page {
         id: customDirDialog
         title: "Select directory for container"
         onAccepted: {
-            stackView.push(createPage, { "initialDestDir": selectedFolder.toString() })
+            stackView.push(createPage, { "initialDestDir": selectedFolder.toString(), "includeBrowserViewer": startPageRoot.includeBrowserViewer })
         }
     }
 
@@ -340,7 +341,7 @@ Page {
                         overwriteDialog.open()
                     } else {
                         var drivePath = controller.driveListModel.pathAtRow(selectedDriveIndex)
-                        stackView.push(createPage, { "initialDestDir": drivePath })
+                        stackView.push(createPage, { "initialDestDir": drivePath, "includeBrowserViewer": startPageRoot.includeBrowserViewer })
                     }
                 }
             }
@@ -383,20 +384,32 @@ Page {
                 onClicked: moreOptions.visible = !moreOptions.visible
             }
 
-            RowLayout {
+            ColumnLayout {
                 id: moreOptions
                 visible: false
                 Layout.alignment: Qt.AlignHCenter
-                spacing: 16
+                spacing: 8
 
-                Button {
-                    text: "Create in Directory..."
-                    onClicked: customDirDialog.open()
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 16
+
+                    Button {
+                        text: "Create in Directory..."
+                        onClicked: customDirDialog.open()
+                    }
+
+                    Button {
+                        text: "Open File..."
+                        onClicked: openFileDialog.open()
+                    }
                 }
 
-                Button {
-                    text: "Open File..."
-                    onClicked: openFileDialog.open()
+                CheckBox {
+                    text: "Include browser viewer (index.html)"
+                    checked: startPageRoot.includeBrowserViewer
+                    Layout.alignment: Qt.AlignHCenter
+                    onToggled: startPageRoot.includeBrowserViewer = checked
                 }
             }
         }

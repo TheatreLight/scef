@@ -1,4 +1,5 @@
 #include "ScefController.h"
+#include "BrowserViewer.h"
 #include "ContainerName.h"
 #include "FileManager.h"
 #include "KdfProfiles.h"
@@ -20,10 +21,7 @@
 #include <botan/mem_ops.h>
 #include <botan/secmem.h>
 
-#include <algorithm>
-#include <filesystem>
 #include <memory>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -133,7 +131,8 @@ QString ScefController::createContainer(const QString& containerFilePath,
                                          int kdfM_MiB,
                                          int kdfT,
                                          int kdfP,
-                                         int cipherIndex)
+                                         int cipherIndex,
+                                         bool includeBrowserViewer)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
@@ -162,7 +161,7 @@ QString ScefController::createContainer(const QString& containerFilePath,
 
     runAsync(std::move(fm),
         [paths, filePath, sizeBytes, profile, kdfM_MiB, kdfT, kdfP, cipher,
-         pwd = std::move(pwd)](FileManager* f) mutable {
+         includeBrowserViewer, pwd = std::move(pwd)](FileManager* f) mutable {
             // All of this runs on the worker thread.
             f->init(paths, filePath, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
                     /*create_new=*/true, pwd);
@@ -182,6 +181,15 @@ QString ScefController::createContainer(const QString& containerFilePath,
             }
 
             f->write();
+
+            if (includeBrowserViewer) {
+                const auto sourceDir = scef::getExecutableDir();
+                const auto destDir = std::filesystem::path(filePath).parent_path();
+                const auto result = scef::copyBrowserViewer(sourceDir, destDir);
+                if (!result.success) {
+                    throw std::runtime_error(result.errorMessage);
+                }
+            }
         },
         [this, containerFilePathQ]() {
             currentContainerDir_ = containerFilePathQ;
