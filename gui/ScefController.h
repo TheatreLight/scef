@@ -36,11 +36,12 @@ public:
                                          const QStringList& files,
                                          const QString& password,
                                          quint64 sizeMB,
-                                         int kdfProfileIndex = 0,
-                                         int kdfM_MiB = 64,
-                                         int kdfT = 3,
-                                         int kdfP = 4,
-                                         int cipherIndex = 0);
+                                         int kdfProfileIndex,
+                                         int kdfM_MiB,
+                                         int kdfT,
+                                         int kdfP,
+                                         int cipherIndex,
+                                         bool includeBrowserViewer);
 
     Q_INVOKABLE QVariantMap estimatePasswordStrength(const QString& password,
                                                       int kdfProfileIndex) const;

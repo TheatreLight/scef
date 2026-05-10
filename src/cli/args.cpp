@@ -5,10 +5,7 @@
 #include "Logger.h"
 
 #include <algorithm>
-#include <filesystem>
 #include <iostream>
-#include <string_view>
-#include <vector>
 
 namespace {
 
@@ -19,8 +16,8 @@ std::string foundKey(const char* arg)
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
-        s == "--cipher" || s == "--log-level" || s == "-y" ||
-        s == "--strength-only" || s == "--password" || s == "--name") {
+        s == "--cipher" || s == "--log-level" ||
+        s == "--password" || s == "--name") {
         return std::string(s);
     }
     return {};
@@ -91,17 +88,24 @@ int parseArgs(int argc, char** argv, ParsedArgs& out,
 
     std::string key;
     for (int i = 2; i < argc; ++i) {
+        const std::string_view currentArg{argv[i]};
+        if (currentArg == "-y" || currentArg == "--yes") {
+            out.assumeYes = true;
+            key.clear();
+            continue;
+        }
+        if (currentArg == "--strength-only") {
+            out.strengthOnly = true;
+            key.clear();
+            continue;
+        }
+        if (currentArg == "--no-browser-viewer") {
+            out.noBrowserViewer = true;
+            key.clear();
+            continue;
+        }
+
         if (const std::string arg = foundKey(argv[i]); !arg.empty()) {
-            if (arg == "-y") {
-                out.assumeYes = true;
-                key.clear();
-                continue;
-            }
-            if (arg == "--strength-only") {
-                out.strengthOnly = true;
-                key.clear();
-                continue;
-            }
             key = arg;
             continue;
         }

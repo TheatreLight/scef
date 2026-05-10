@@ -3,6 +3,8 @@ build/
 out/
 cmake-build-*/
 browser/dist/
+review/
+docs/figures/
 
 # IDE
 .idea/
@@ -12,6 +14,7 @@ browser/dist/
 CMakeLists.txt.user
 *.swp
 *~
+compile_commands.json
 
 # Python
 __pycache__/

@@ -24,6 +24,7 @@ struct ParsedArgs {
     std::string              log_level_name;
     bool                     assumeYes       = false;
     bool                     strengthOnly    = false;
+    bool                     noBrowserViewer = false;
     std::string              password;        // --password (optional, testing aid)
     std::string              command;         // argv[1]
 };

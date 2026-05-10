@@ -10,6 +10,7 @@ Page {
     padding: 24
     property bool sizeError: false
     property string initialDestDir: ""
+    property bool includeBrowserViewer: true
     property string progressStage: ""
     property real progressFraction: -1.0
 
@@ -78,7 +79,8 @@ Page {
             kdfMemSpin.value,
             kdfIterSpin.value,
             kdfParallelSpin.value,
-            cipherCombo.currentIndex
+            cipherCombo.currentIndex,
+            includeBrowserViewer
         )
 
         // Password is consumed synchronously by securePasswordFromQString — clear immediately.

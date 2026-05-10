@@ -14,6 +14,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(BROWSER_VIEWER_BUILD "Build the browser viewer (dist/index.html) and copy it next to scef binaries" ON)
+
 # --- Compiler warnings ---
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     add_compile_options(/W4)
@@ -80,6 +82,7 @@ add_library(scef_lib STATIC
     src/BenchMeasurerGuard.cpp
     src/PasswordStrengthEstimator.cpp
     src/ContainerName.cpp
+    src/BrowserViewer.cpp
 )
 
 target_include_directories(scef_lib PUBLIC
@@ -118,6 +121,37 @@ add_executable(scef
 target_include_directories(scef PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(scef PRIVATE scef_lib)
 
+if(BROWSER_VIEWER_BUILD)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    file(GLOB_RECURSE BROWSER_VIEWER_INPUTS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/browser/src/*"
+        "${CMAKE_CURRENT_SOURCE_DIR}/browser/vendor/*"
+    )
+
+    set(BROWSER_VIEWER_INDEX "${CMAKE_CURRENT_SOURCE_DIR}/browser/dist/index.html")
+
+    add_custom_command(
+        OUTPUT "${BROWSER_VIEWER_INDEX}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/browser/build.py"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/browser/build.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/browser/index.html"
+            ${BROWSER_VIEWER_INPUTS}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/browser"
+        VERBATIM
+    )
+
+    add_custom_target(browser_viewer DEPENDS "${BROWSER_VIEWER_INDEX}")
+    add_dependencies(scef browser_viewer)
+
+    add_custom_command(TARGET scef POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/browser/dist/index.html"
+                "$<TARGET_FILE_DIR:scef>/index.html"
+        VERBATIM)
+endif()
+
 # --- Benchmarks ---
 add_subdirectory(benchmarks)
 
@@ -131,6 +165,7 @@ if(SCEF_BUILD_TESTS)
         tests/unit/test_scef.cpp
         tests/unit/test_native_file.cpp
         tests/unit/test_password_strength.cpp
+        tests/unit/test_browser_viewer.cpp
     )
 
     target_link_libraries(scef_unit_tests PRIVATE
