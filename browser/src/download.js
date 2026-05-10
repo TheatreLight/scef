@@ -149,11 +149,11 @@ async function decryptFileToMemory(containerFile, header, fileEntry, dekKey, slo
         offset += chunk.length;
     }
 
-    // Verify SHA-256
+    // Verify SHA-256 (browser viewer supports SHA-256 containers only)
     const hash = await sha256hex(assembled);
-    if (hash !== fileEntry.checksumSha256) {
+    if (hash !== fileEntry.checksum) {
         throw new Error('Checksum mismatch for ' + fileEntry.name +
-            ': expected ' + fileEntry.checksumSha256 + ', got ' + hash);
+            ': expected ' + fileEntry.checksum + ', got ' + hash);
     }
 
     return assembled;
@@ -197,11 +197,11 @@ async function decryptFileStreaming(containerFile, header, fileEntry, dekKey, sl
         }
     }
 
-    // Verify whole-file SHA-256 checksum (matches C++ and blob path behavior)
+    // Verify whole-file SHA-256 checksum (browser viewer supports SHA-256 containers only)
     const hash = hasher.digest('hex').toUpperCase();
-    if (hash !== fileEntry.checksumSha256) {
+    if (hash !== fileEntry.checksum) {
         throw new Error('Checksum mismatch for ' + fileEntry.name +
-            ': expected ' + fileEntry.checksumSha256 + ', got ' + hash);
+            ': expected ' + fileEntry.checksum + ', got ' + hash);
     }
 }
 

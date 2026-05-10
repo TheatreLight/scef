@@ -86,6 +86,11 @@ async function validateAndPromptPassword() {
             return;
         }
 
+        if (firstHeader.hashAlgoId !== SCEF.HASH_SHA_256) {
+            UI.status('This container uses a hash algorithm not supported by the browser viewer. Please use the native CLI/GUI.', 'error');
+            return;
+        }
+
         UI.fileSectionEl.style.display = 'none';
         UI.status('Container recognized. Enter password to unlock.', 'info');
         UI.showPasswordSection();

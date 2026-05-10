@@ -11,10 +11,12 @@
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <stdexcept>
 
-DecryptPipeline::DecryptPipeline(CryptoManager& crypto, Config config)
+DecryptPipeline::DecryptPipeline(CryptoManager& crypto, Config config, EHash hash_algo)
     : crypto_(crypto)
     , config_(config)
+    , hash_algo_(hash_algo)
     , pool_(config.worker_count + 1)
     , readQueue_(config.queue_capacity)
     , writeQueue_(config.queue_capacity * 2)
@@ -80,7 +82,7 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries, Fragment
             sentinel.data_size = 0;
             sentinel.file_path = entry.name;
             sentinel.end_of_file = true;
-            sentinel.file_checksum = entry.checksum_sha256;
+            sentinel.file_checksum = entry.checksum;
             sentinel.file_plain_size = 0;
             writeQueue_.push(std::move(sentinel));
             continue;
@@ -108,7 +110,7 @@ void DecryptPipeline::readerTask(const std::vector<FileEntry>& entries, Fragment
 
             if (i == entry.chunks - 1) {
                 task.end_of_file = true;
-                task.file_checksum = entry.checksum_sha256;
+                task.file_checksum = entry.checksum;
                 task.file_plain_size = entry.size;
             }
 
@@ -164,7 +166,11 @@ void DecryptPipeline::writerLoop(const std::string& outputDir, const std::atomic
     NativeFile currentOutput;
     uint64_t currentOutputOffset = 0;
     std::string currentFileName;
-    auto hasher = Botan::HashFunction::create("SHA-256");
+    auto hasher = Botan::HashFunction::create(botanHashName(hash_algo_));
+    if (!hasher) {
+        throw std::runtime_error("Hash algorithm unavailable: " +
+                                 std::string(botanHashName(hash_algo_)));
+    }
 
     auto safeFilename = [](const std::string& name) -> std::string {
         auto safe = std::filesystem::path(name).filename();

@@ -61,7 +61,7 @@ int main() {
     std::array<uint8_t, 160> hmacInput{};
     for (int i = 0; i < 160; i++) hmacInput[i] = static_cast<uint8_t>(i);
 
-    auto mac = Botan::MessageAuthenticationCode::create("HMAC(SHA-256)");
+    auto mac = Botan::MessageAuthenticationCode::create(std::string(botanHmacName(EHash::SHA_256)));
     mac->set_key(kek.data(), 32);
     mac->update(hmacInput.data(), hmacInput.size());
     auto hmacResult = mac->final();

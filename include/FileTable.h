@@ -12,7 +12,7 @@
 //       "size": 1048576,
 //       "offset": 131072,
 //       "chunks": 16,
-//       "checksum_sha256": "a1b2c3d4..."
+//       "checksum": "a1b2c3d4..."
 //     }
 //   ]
 // }
@@ -22,7 +22,7 @@ struct FileEntry {
     uint64_t size;
     uint64_t offset;
     uint64_t chunks;
-    std::string checksum_sha256;
+    std::string checksum;
 };
 
 class FileTable {

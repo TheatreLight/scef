@@ -155,7 +155,7 @@ Source: `gui/FileListModel.h`
 |-----------|---------|------|-------------|
 | `name` | `NameRole` | `QString` | File name |
 | `size` | `SizeRole` | `quint64` | Plaintext file size in bytes |
-| `checksum` | `ChecksumRole` | `QString` | Hex SHA-256 checksum |
+| `checksum` | `ChecksumRole` | `QString` | Hex checksum (algorithm from `hash_algo_id`; 64 chars for SHA-256/Streebog-256, 128 for Streebog-512) |
 
 ### Key Methods
 
@@ -302,7 +302,7 @@ Exposes `property string password`. On `accepted`, the caller reads the password
 **Header row:** Container path, file count.
 
 **File list** (`ListView` bound to `controller.fileListModel`):
-- Columns: checkbox, Name, Size (formatted), SHA-256 (first 16 chars + `...`)
+- Columns: checkbox, Name, Size (formatted), Checksum (first 16 chars + `...`)
 - Multi-selection via checkboxes (`selectedIndices` map)
 
 **Actions:**

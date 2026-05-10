@@ -40,6 +40,8 @@ SLOT_RESERVED = HEADER_SIZE + DEFAULT_MAX_TABLE_SIZE  # 69632 bytes per slot
 # HMAC field offset and size inside the header (spec Table 4.2).
 POSITION_HEADER_HMAC = 0x00A0             # byte offset of 32-byte HMAC field
 HMAC_SIZE = 32
+POSITION_HASH_ALGO_ID = 0x0098            # byte offset of hash_algo_id
+HASH_STREEBOG256_ID = 0x02
 
 # Encrypted DEK field — offset 0x0048, 32 bytes.
 POSITION_ENCRYPTED_DEK = 0x0048
@@ -304,6 +306,19 @@ class TestHmacCorruption:
         cdir, container_path, content = make_test_container(tmp_path)
 
         corrupt_bytes(container_path, POSITION_HEADER_HMAC, HMAC_SIZE, fill=b"\xFF")
+
+        assert_extract_roundtrip(cdir, tmp_path, "payload.bin", content)
+
+    def test_TC_HDR_09c_corrupt_slot0_hash_algo_id_falls_back(self, tmp_path):
+        """
+        TC-HDR-09c: Change hash_algo_id in slot 0 from SHA-256 (0x01) to
+        Streebog-256 (0x02). The byte is HMAC-protected, so slot 0 must be
+        rejected and extraction must recover from slot 1.
+        """
+        cdir, container_path, content = make_test_container(tmp_path)
+
+        corrupt_bytes(container_path, POSITION_HASH_ALGO_ID, 1,
+                      fill=bytes([HASH_STREEBOG256_ID]))
 
         assert_extract_roundtrip(cdir, tmp_path, "payload.bin", content)
 

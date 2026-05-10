@@ -3,6 +3,7 @@
 
 #include "BoundedQueue.h"
 #include "CryptoManager.h"
+#include "enums/EHash.h"
 #include "FileTable.h"
 #include "FragmentedIO.h"
 #include "Header.h"
@@ -23,7 +24,7 @@ public:
         size_t queue_capacity;
     };
 
-    EncryptPipeline(CryptoManager& crypto, Config config);
+    EncryptPipeline(CryptoManager& crypto, Config config, EHash hash_algo);
     ~EncryptPipeline();
 
     void run(const std::vector<std::string>& files,
@@ -51,6 +52,7 @@ private:
 
     CryptoManager& crypto_;
     Config config_;
+    EHash hash_algo_;
     BS::thread_pool<> pool_;
     BoundedQueue<ProcessedChunk> readQueue_;
     BoundedQueue<ProcessedChunk> writeQueue_;

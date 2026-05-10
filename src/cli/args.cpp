@@ -5,6 +5,7 @@
 #include "Logger.h"
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 
 namespace {
@@ -16,7 +17,7 @@ std::string foundKey(const char* arg)
     if (s == "-c" || s == "-f" || s == "-o" || s == "-s" ||
         s == "--max_table_size" || s == "--kdf-profile" ||
         s == "--kdf-m" || s == "--kdf-t" || s == "--kdf-p" ||
-        s == "--cipher" || s == "--log-level" ||
+        s == "--cipher" || s == "--hash" || s == "--log-level" ||
         s == "--password" || s == "--name") {
         return std::string(s);
     }
@@ -38,6 +39,21 @@ std::optional<ECipher> parseCipherName(const std::string& text)
     }
     if (value == "kuznechik" || value == "kuznyechik" || value == "gost") {
         return ECipher::Kuznechik_GCM;
+    }
+    return std::nullopt;
+}
+
+std::optional<EHash> parseHashName(const std::string& text)
+{
+    const std::string value = toLowerAscii(text);
+    if (value == "sha256" || value == "sha-256") {
+        return EHash::SHA_256;
+    }
+    if (value == "streebog256" || value == "streebog-256") {
+        return EHash::Streebog_256;
+    }
+    if (value == "streebog512" || value == "streebog-512") {
+        return EHash::Streebog_512;
     }
     return std::nullopt;
 }
@@ -135,6 +151,14 @@ int parseArgs(int argc, char** argv, ParsedArgs& out,
                 return EXIT_FAILURE;
             }
             out.cipher = *parsed;
+        } else if (key == "--hash") {
+            auto parsed = parseHashName(argv[i]);
+            if (!parsed) {
+                std::cerr << "Unknown hash '" << argv[i]
+                          << "'. Valid values: sha256, sha-256, streebog256, streebog-256, streebog512, streebog-512\n";
+                return EXIT_FAILURE;
+            }
+            out.hash_algo = *parsed;
         } else if (key == "--log-level") {
             out.log_level_name = argv[i];
         } else if (key == "--password") {

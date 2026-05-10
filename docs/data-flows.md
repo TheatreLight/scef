@@ -30,7 +30,7 @@ flowchart TD
     A["FileManager::write()"]
     B["createContainerFile()\npre-allocate to container_size bytes\n(seek to last byte, write 0x00)"]
     C["initCryptoForCreate()\ngenerateSalt → deriveKek → zero password\nwrapDek → setDekNonce/EncryptedDek/Tag"]
-    D["computeAndStoreHeaderHmac()\nheader.serialize() → HMAC-SHA256(bytes[0..0x9F]) → storeHmac"]
+    D["computeAndStoreHeaderHmac()\nheader.serialize() → HMAC-{hash_algo_id}(bytes[0..0x9F]) → storeHmac\n(Streebog-512 output truncated to first 32 bytes)"]
     E["writeAllSlots()\nwrite Header + empty FileTable at all 4 slot offsets"]
     F["writeChunks(dataStart)\nfor each file in filesList_:\n  open file, loop over BLOCK_SIZE chunks:\n    updateChecksum(chunk)\n    crypto->encrypt(chunk) → writeFragmented()"]
     G["fileTable.setNextWriteOffset(endPos)"]
@@ -48,8 +48,8 @@ File encryption is delegated to `EncryptPipeline`, a multi-stage pipeline with r
 1. Reads source file in `BLOCK_SIZE` chunks (reader thread).
 2. Encrypts each chunk with AES-256-GCM using a fresh random nonce (worker thread). Output layout: `[nonce 12B][ciphertext][auth tag 16B]`.
 3. Writes encrypted chunks to the container via `FragmentedIO`, automatically skipping slot reserved areas (writer thread).
-4. Computes SHA-256 of the plaintext data incrementally across all chunks.
-5. After all chunks: calls `fileTable_.addFileEntry(path, checksum, startOffset, actualSize)` with the completed hex SHA-256.
+4. Computes a hash of the plaintext data incrementally across all chunks, using the algorithm specified by `EHash` (passed at construction — matches `hash_algo_id` from the header).
+5. After all chunks: calls `fileTable_.addFileEntry(path, checksum, startOffset, actualSize)` with the completed hex checksum (64 chars for SHA-256/Streebog-256, 128 chars for Streebog-512).
 
 The `FileTable` does not perform incremental hashing; it only stores the final checksum provided by `EncryptPipeline`.
 
@@ -120,7 +120,7 @@ flowchart TD
     D["Extract only requested file names"]
     E["For each file:\nsafeFilename = path.filename()\nopen output file"]
     F["readChunks(output, fileEntry)\nfor each chunk:\n  seek to skipSlots(offset)\n  read NONCE_SIZE + plainSize + AUTH_TAG_SIZE\n  crypto->decrypt(encBuf) → write to output"]
-    G["checkSumVerify(fileEntry)\ncompute SHA-256 of decrypted output\ncompare to fileEntry.checksum_sha256"]
+    G["checkSumVerify(fileEntry)\ncompute hash (per header hash_algo_id) of decrypted output\ncompare to fileEntry.checksum"]
     H{Match?}
     I["log warning (output file kept)"]
     J["file extracted OK"]
@@ -145,7 +145,7 @@ flowchart TD
     B["header_.incrementHeaderVersion()"]
     C["fileTable_.serialize() → JSON string"]
     D["crypto_->encrypt(jsonStr) → encTable\nheader_.setFileTableSize(encSize)"]
-    E["computeAndStoreHeaderHmac()\nheader_.serialize()\nHMAC(bytes[0..0x9F]) → header_.storeHmac"]
+    E["computeAndStoreHeaderHmac()\nheader_.serialize()\nHMAC-{hash_algo_id}(bytes[0..0x9F]) → header_.storeHmac\n(Streebog-512 truncated to 32 bytes)"]
     F["For i in 0..3:\n  writeHeaderAt(slotOffsets_[i])\n  writeFileTableAt(slotOffsets_[i], encTable)"]
     G["containerFile_.syncToDevice()"]
 
@@ -222,7 +222,7 @@ See [browser-viewer.md](browser-viewer.md) for the full JS sequence diagram.
 Key differences from native:
 - Argon2id via hash-wasm WASM (not Botan)
 - AES-256-GCM via WebCrypto API (`crypto.subtle`)
-- HMAC-SHA256 via WebCrypto (`HMAC` + `SHA-256`)
+- HMAC-SHA256 via WebCrypto (`HMAC` + `SHA-256`); browser viewer only supports `hash_algo_id = 0x01` (SHA-256) — containers with GOST hashes are rejected with a user-facing error
 - All async (Promises)
 - No re-derivation on corruption: derives once, tries all valid slots with the same KEK
 - KEK zeroed best-effort (`kek.fill(0)`)

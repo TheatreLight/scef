@@ -17,7 +17,7 @@ graph TD
     scef_lib --> gui
     scef_lib --> vectors
 
-    botan["Botan 3.x\n(crypto: Argon2id, AES-256-GCM,\nHMAC-SHA256, Kuznechik-GCM)"]
+    botan["Botan 3.x\n(crypto: Argon2id, AES-256-GCM, Kuznechik-GCM,\nHMAC-SHA256, HMAC-Streebog-256, HMAC-Streebog-512)"]
     json["nlohmann_json\n(JSON serialization)"]
     gtest["GTest\n(unit tests only)"]
     qt["Qt 6.x\n(Quick, QuickControls2)"]
@@ -84,13 +84,14 @@ scef/
 │   └── enums/
 │       ├── ECiphers.h      — ECipher enum (AES_256_GCM, Kuznechik_GCM)
 │       ├── EKDF.h          — EKDF enum (Argon2id)
-│       └── EKDFProfile.h   — EKDFProfile enum (Browser, Fast, Standard, High)
+│       ├── EKDFProfile.h   — EKDFProfile enum (Browser, Fast, Standard, High)
+│       └── EHash.h         — EHash enum (SHA_256, Streebog_256, Streebog_512) + helpers
 ├── src/                    — implementation
 │   ├── main.cpp            — CLI entry point
 │   ├── Header.cpp          — header parse/serialize/HMAC
 │   ├── CryptoManager.cpp   — Botan crypto calls
 │   ├── FileManager.cpp     — container I/O orchestration
-│   ├── FileTable.cpp       — JSON file table + SHA-256
+│   ├── FileTable.cpp       — JSON file table + file checksum (algorithm from header)
 │   ├── KdfProfiles.cpp     — profile parameter table
 │   └── Logger.cpp          — file logger implementation
 ├── gui/                    — Qt 6 QML GUI
@@ -222,11 +223,11 @@ classDiagram
 
 ## Three Operating Modes
 
-| Mode | Binary | Crypto library | Capabilities |
-|------|--------|---------------|-------------|
-| A — Native CLI | `scef` | Botan 3.x | AES-256-GCM + Kuznechik-GCM, full read/write |
-| A-GUI — Qt Desktop | `scef-gui` | Botan 3.x (via scef_lib) | AES-256-GCM + Kuznechik-GCM, full read/write, GUI |
-| B — Browser | `browser/index.html` | WebCrypto + hash-wasm WASM | AES-256-GCM only, read-only decrypt + download |
+| Mode | Binary | Crypto library | Cipher support | Hash support |
+|------|--------|---------------|----------------|-------------|
+| A — Native CLI | `scef` | Botan 3.x | AES-256-GCM, Kuznechik-GCM | SHA-256, Streebog-256, Streebog-512 |
+| A-GUI — Qt Desktop | `scef-gui` | Botan 3.x (via scef_lib) | AES-256-GCM, Kuznechik-GCM | SHA-256, Streebog-256, Streebog-512 (defaults only; no UI selector in this version) |
+| B — Browser | `browser/index.html` | WebCrypto + hash-wasm WASM | AES-256-GCM only | SHA-256 only (GOST hashes are native-only; browser rejects containers with `hash_algo_id != 0x01`) |
 
 ## Key Implementation Constants
 
