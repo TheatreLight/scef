@@ -3,17 +3,26 @@
 #include <QQmlContext>
 #include <QCoreApplication>
 #include <QQuickStyle>
+#include <QStandardPaths>
+#include <QDir>
 
 #include "ScefController.h"
 #include "Logger.h"
 
 int main(int argc, char* argv[])
 {
+    QCoreApplication::setOrganizationName("MEPhI");
+    QCoreApplication::setApplicationName("SCEF");
+
     QGuiApplication app(argc, argv);
 
-    // Log directory: <executable_dir>/logs/
-    std::filesystem::path logDir =
-        QCoreApplication::applicationDirPath().toStdString();
+    // Per-user writable location: %LOCALAPPDATA%\MEPhI\SCEF\logs on Windows.
+    // Program Files is read-only for non-admin users, so logs cannot live next
+    // to the executable in a per-machine install.
+    QString appDataDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QDir().mkpath(appDataDir);
+    std::filesystem::path logDir = appDataDir.toStdString();
     logDir /= "logs";
     Logger::init(/*mirror_to_console=*/false, logDir);
 #ifdef NDEBUG

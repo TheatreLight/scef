@@ -1,0 +1,14 @@
+# Build inputs cached locally
+cache/
+
+# Build outputs
+staging/
+dist/
+build.log
+
+# WiX intermediates (also created at repo root if wix is run from there)
+Harvest.wxs
+*.wixobj
+*.wixpdb
+*.msi
+
