@@ -6,6 +6,7 @@
 #include "Logger.h"
 #include "PasswordStrengthEstimator.h"
 #include "enums/ECiphers.h"
+#include "enums/EHash.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -132,7 +133,8 @@ QString ScefController::createContainer(const QString& containerFilePath,
                                          int kdfT,
                                          int kdfP,
                                          int cipherIndex,
-                                         bool includeBrowserViewer)
+                                         bool includeBrowserViewer,
+                                         int hashIndex)
 {
     if (busy_) return QStringLiteral("Operation already in progress");
 
@@ -150,6 +152,15 @@ QString ScefController::createContainer(const QString& containerFilePath,
         default: cipher = ECipher::AES_256_GCM;   break;
     }
 
+    EHash hash;
+    switch (hashIndex) {
+        case 0:  hash = defaultHashForCipher(cipher); break;  // "Default — matches cipher"
+        case 1:  hash = EHash::SHA_256;               break;
+        case 2:  hash = EHash::Streebog_256;          break;
+        case 3:  hash = EHash::Streebog_512;          break;
+        default: hash = defaultHashForCipher(cipher); break;
+    }
+
     // Derive the container's parent directory for the success callback.
     auto containerFilePathQ = QString::fromStdString(filePath);
 
@@ -160,13 +171,14 @@ QString ScefController::createContainer(const QString& containerFilePath,
     emit progressChanged(QString(), -1.0);
 
     runAsync(std::move(fm),
-        [paths, filePath, sizeBytes, profile, kdfM_MiB, kdfT, kdfP, cipher,
+        [paths, filePath, sizeBytes, profile, kdfM_MiB, kdfT, kdfP, cipher, hash,
          includeBrowserViewer, pwd = std::move(pwd)](FileManager* f) mutable {
             // All of this runs on the worker thread.
             f->init(paths, filePath, sizeBytes, DEFAULT_MAX_TABLE_SIZE,
                     /*create_new=*/true, pwd);
 
             f->setCipher(cipher);
+            f->setHashAlgo(hash);
 
             const KdfProfileParams* p = (profile != EKDFProfile::None)
                                         ? getProfileParams(profile)

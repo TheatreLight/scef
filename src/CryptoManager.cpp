@@ -10,6 +10,7 @@
 #include "botan/mem_ops.h"
 #include "botan/pwdhash.h"
 
+#include <algorithm>
 #include <cstring>
 #include <span>
 #include <stdexcept>
@@ -40,6 +41,22 @@ void CryptoManager::setCipher(ECipher c) {
     }
     LOG_INFO("Call CryptoManager::setCipher(): cipher_id=0x%02x, algo=%s",
              static_cast<unsigned>(c), cipherAlgo_.c_str());
+}
+
+bool CryptoManager::isHmacAvailable(EHash h) {
+    if (!isSupportedHash(h)) {
+        return false;
+    }
+    return Botan::MessageAuthenticationCode::create(botanHmacName(h)) != nullptr;
+}
+
+void CryptoManager::setHashAlgo(EHash h) {
+    if (!isSupportedHash(h)) {
+        throw std::invalid_argument("CryptoManager::setHashAlgo: unknown hash id");
+    }
+    hash_algo_ = h;
+    LOG_INFO("Call CryptoManager::setHashAlgo(): hash_algo_id=0x%02x, algo=%s",
+             static_cast<unsigned>(h), std::string(botanHmacName(h)).c_str());
 }
 
 void CryptoManager::deriveKek(const Botan::secure_vector<char>& password, Header& header) {
@@ -141,15 +158,16 @@ std::array<uint8_t, 32> CryptoManager::computeHmac(const uint8_t* data, size_t s
     if (!kek_ready_) {
         throw std::runtime_error("CryptoManager: KEK not derived; call deriveKek() first");
     }
-    auto mac = Botan::MessageAuthenticationCode::create("HMAC(SHA-256)");
+    auto mac = Botan::MessageAuthenticationCode::create(botanHmacName(hash_algo_));
     if (!mac) {
-        throw std::runtime_error("HMAC-SHA256 not available");
+        throw std::runtime_error("HMAC algorithm unavailable: " +
+                                 std::string(botanHmacName(hash_algo_)));
     }
     mac->set_key(kek_.data(), KEK_SIZE);
     mac->update(data, size);
     auto digest = mac->final();
     std::array<uint8_t, 32> result{};
-    std::copy(digest.begin(), digest.end(), result.begin());
+    std::copy(digest.begin(), digest.begin() + std::min(digest.size(), size_t{32}), result.begin());
     LOG_DEBUG("computeHmac: input_size=%zu, hmac[0..2]=%02x%02x%02x",
         size, result[0], result[1], result[2]);
     return result;

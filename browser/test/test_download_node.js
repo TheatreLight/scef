@@ -104,7 +104,13 @@ async function main() {
 
     console.log('Files in container:', fileTable.files.length);
 
-    // Decrypt each file and verify checksum
+    if (header.hashAlgoId !== SCEF.HASH_SHA_256) {
+        console.warn(`WARNING: test_download_node.js only verifies SHA-256 checksums. ` +
+            `Container has hashAlgoId=0x${header.hashAlgoId.toString(16).padStart(2,'0')}; ` +
+            `skipping checksum verification.`);
+    }
+
+    // Decrypt each file and verify checksum (only when hash_algo_id == 0x01)
     const slotReservedSize = header.headerSize + header.maxTableSize;
     let allPassed = true;
 
@@ -140,19 +146,24 @@ async function main() {
             remaining -= plainSize;
         }
 
-        // Assemble and verify SHA-256
+        // Assemble and verify SHA-256 (only when hash_algo_id == 0x01)
         const assembled = Buffer.concat(chunks);
-        const hash = cryptoNode.createHash('sha256').update(assembled).digest('hex').toUpperCase();
+        if (header.hashAlgoId === SCEF.HASH_SHA_256) {
+            const hash = cryptoNode.createHash('sha256').update(assembled).digest('hex').toUpperCase();
 
-        console.log('  Expected SHA-256:', file.checksum_sha256);
-        console.log('  Got SHA-256:     ', hash);
+            console.log('  Expected checksum:', file.checksum);
+            console.log('  Got SHA-256:     ', hash);
 
-        if (hash === file.checksum_sha256) {
-            console.log('  PASS: checksum matches');
-            console.log('  Content preview:', assembled.toString('utf-8').substring(0, 80));
+            if (hash === file.checksum) {
+                console.log('  PASS: checksum matches');
+                console.log('  Content preview:', assembled.toString('utf-8').substring(0, 80));
+            } else {
+                console.log('  FAIL: checksum mismatch');
+                allPassed = false;
+            }
         } else {
-            console.log('  FAIL: checksum mismatch');
-            allPassed = false;
+            console.log('  Checksum verification skipped (non-SHA-256 hash algorithm)');
+            console.log('  Content preview:', assembled.toString('utf-8').substring(0, 80));
         }
     }
 

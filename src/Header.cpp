@@ -19,6 +19,24 @@ std::string unsupported_cipher_message(const char* context, ECipher cipher) {
     return ss.str();
 }
 
+std::string unsupported_hash_message(const char* context, EHash hash) {
+    std::ostringstream ss;
+    ss << context << ": unsupported hash_algo_id 0x"
+       << std::hex << std::setfill('0') << std::setw(2)
+       << static_cast<unsigned>(hash)
+       << " (expected 0x01 SHA-256, 0x02 Streebog-256, or 0x03 Streebog-512)";
+    return ss.str();
+}
+
+std::string unknown_hash_message(const char* context, EHash hash) {
+    std::ostringstream ss;
+    ss << context << ": unknown hash_algo_id 0x"
+       << std::hex << std::setfill('0') << std::setw(2)
+       << static_cast<unsigned>(hash)
+       << " (expected 0x01, 0x02, or 0x03)";
+    return ss.str();
+}
+
 template<size_t N>
 std::string hex_dump(const std::array<uint8_t, N>& arr) {
     std::ostringstream ss;
@@ -64,6 +82,13 @@ void Header::read(const HeaderBuffer& buf) {
     // | 0x0006 | 2 | version_minor | uint16_le |
     p = buf.data() + POSITION_VERSION_MINOR;
     version_minor_ = read_le<uint16_t>(p);
+    if (version_major_ != HEADER_VERSION_MAJOR || version_minor_ != HEADER_VERSION_MINOR) {
+        throw std::runtime_error(
+            "Unsupported container version: " + std::to_string(version_major_) +
+            "." + std::to_string(version_minor_) +
+            " (expected " + std::to_string(HEADER_VERSION_MAJOR) +
+            "." + std::to_string(HEADER_VERSION_MINOR) + ")");
+    }
     // | 0x0008 | 4 | header_size | uint32_le |
     p = buf.data() + POSITION_HEADER_SIZE;
     header_size_ = read_le<uint32_t>(p);
@@ -112,7 +137,12 @@ void Header::read(const HeaderBuffer& buf) {
     // | 0x0094 | 4 | flags | uint32_le |
     p = buf.data() + POSITION_FLAGS;
     flags_ = read_le<uint32_t>(p);
-    // | 0x0098 | 8 | reserved_0 | uint8[8] |
+    // | 0x0098 | 1 | hash_algo_id | uint8 |
+    hash_algo_ = static_cast<EHash>(buf[POSITION_HASH_ALGO_ID]);
+    if (!isSupportedHash(hash_algo_)) {
+        throw std::runtime_error(unknown_hash_message("Header::read", hash_algo_));
+    }
+    // | 0x0099 | 7 | reserved_0 | uint8[7] |
     std::copy(buf.begin() + POSITION_RESERVED_0, buf.begin() + POSITION_HEADER_HMAC, reserved_0_.begin());
     // | 0x00A0 | 32 | header_hmac | uint8[32] |
     std::copy(buf.begin() + POSITION_HEADER_HMAC, buf.begin() + POSITION_RESERVED, header_hmac_.begin());
@@ -165,6 +195,9 @@ void Header::setDekAuthTag(const std::array<uint8_t, AUTH_TAG_SIZE>& tag) {
 void Header::createBuffer() {
     if (!isSupportedCipher(cipher_)) {
         throw std::runtime_error(unsupported_cipher_message("Header::serialize", cipher_));
+    }
+    if (!isSupportedHash(hash_algo_)) {
+        throw std::runtime_error(unsupported_hash_message("Header::serialize", hash_algo_));
     }
 
     // Zero the entire buffer first so padding regions are always zero.
@@ -233,7 +266,10 @@ void Header::createBuffer() {
     // | 0x0094 | 4 | flags | uint32_le |
     write_le32(&buffer_.at(POSITION_FLAGS), flags_);
 
-    // | 0x0098 | 8 | reserved_0 | uint8[8] | (zeros)
+    // | 0x0098 | 1 | hash_algo_id | uint8 |
+    buffer_[POSITION_HASH_ALGO_ID] = static_cast<uint8_t>(hash_algo_);
+
+    // | 0x0099 | 7 | reserved_0 | uint8[7] | (zeros)
     std::copy(reserved_0_.begin(), reserved_0_.end(), buffer_.begin() + POSITION_RESERVED_0);
 
     // | 0x00A0 | 32 | header_hmac | uint8[32] |
@@ -255,6 +291,8 @@ std::string Header::to_string() const {
     ss << "version:           " << version_major_ << "." << version_minor_ << "\n";
     ss << "header_size:       " << header_size_ << "\n";
     ss << "cipher_id:         0x" << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(cipher_) << "\n";
+    ss << "hash_algo_id:      0x" << std::hex << std::setfill('0') << std::setw(2)
+       << static_cast<int>(hash_algo_) << " (" << hashDisplayName(hash_algo_) << ")\n";
     ss << "kdf_id:            0x" << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(kdf_) << "\n";
     ss << "kdf_profile_id:    " << std::dec << static_cast<int>(kdf_profile_) << "\n";
     ss << "kdf_m_kib:         " << std::dec << kdf_m_kib_ << "\n";

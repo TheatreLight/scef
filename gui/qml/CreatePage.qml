@@ -80,7 +80,8 @@ Page {
             kdfIterSpin.value,
             kdfParallelSpin.value,
             cipherCombo.currentIndex,
-            includeBrowserViewer
+            includeBrowserViewer,
+            hashCombo.currentIndex
         )
 
         // Password is consumed synchronously by securePasswordFromQString — clear immediately.
@@ -445,6 +446,40 @@ Page {
                     text: cipherCombo.currentIndex === 0
                           ? "AES-256-GCM: hardware-accelerated, browser-readable."
                           : "Kuznechik-GCM: GOST 34.12-2015 (Russian standard). Native CLI/GUI only — not browser-readable."
+                }
+
+                Label { text: "Hash:" }
+                ComboBox {
+                    id: hashCombo
+                    Layout.fillWidth: true
+                    model: [
+                        "Default (matches cipher)",
+                        "SHA-256",
+                        "Streebog-256 (GOST 34.11-2012)",
+                        "Streebog-512 (GOST 34.11-2012)"
+                    ]
+                    currentIndex: 0
+                }
+                Item { Layout.preferredWidth: 18 }
+
+                // Hash description — spans columns 2-3
+                Item {}
+                Label {
+                    id: hashDescLabel
+                    Layout.fillWidth: true
+                    Layout.columnSpan: 2
+                    font.pixelSize: 11
+                    opacity: 0.6
+                    wrapMode: Text.WordWrap
+                    text: {
+                        switch (hashCombo.currentIndex) {
+                            case 0: return "Hash matches cipher: AES → SHA-256, Kuznechik → Streebog-512."
+                            case 1: return "Widely supported, hardware-accelerated, browser-readable."
+                            case 2: return "GOST 34.11-2012 (Russian standard). Native CLI/GUI only — not browser-readable."
+                            case 3: return "GOST 34.11-2012 (Russian standard). Native CLI/GUI only — not browser-readable."
+                            default: return ""
+                        }
+                    }
                 }
 
                 // Advanced toggle — spans all 3 columns

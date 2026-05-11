@@ -10,10 +10,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <stdexcept>
 
-EncryptPipeline::EncryptPipeline(CryptoManager& crypto, Config config)
+EncryptPipeline::EncryptPipeline(CryptoManager& crypto, Config config, EHash hash_algo)
     : crypto_(crypto)
     , config_(config)
+    , hash_algo_(hash_algo)
     , pool_(config.worker_count + 1)
     , readQueue_(config.queue_capacity)
     , writeQueue_(config.queue_capacity * 2)
@@ -96,7 +98,14 @@ void EncryptPipeline::readerTask(const std::vector<std::string>& files, const st
             break;
         }
 
-        auto hasher = Botan::HashFunction::create("SHA-256");
+        auto hasher = Botan::HashFunction::create(botanHashName(hash_algo_));
+        if (!hasher) {
+            ProcessedChunk errChunk;
+            errChunk.seq_no = seqNo++;
+            errChunk.error = "Hash algorithm unavailable: " + std::string(botanHashName(hash_algo_));
+            writeQueue_.push(std::move(errChunk));
+            break;
+        }
         uint64_t readOffset = 0;
         uint64_t fileBytesRead = 0;
 

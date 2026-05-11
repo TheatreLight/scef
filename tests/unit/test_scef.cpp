@@ -7,15 +7,26 @@
 
 #include <gtest/gtest.h>
 
+#include "CryptoManager.h"
 #include "Header.h"
 #include "FileManager.h"
 
+#include <botan/hash.h>
+#include <botan/hex.h>
+#include <botan/mac.h>
+#include <botan/pwdhash.h>
 #include <botan/secmem.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <memory>
+#include <numeric>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,6 +85,74 @@ fs::path make_temp_dir(const std::string& suffix) {
 
 Botan::secure_vector<char> make_secure_vector(std::string_view text) {
     return Botan::secure_vector<char>(text.begin(), text.end());
+}
+
+Header make_hash_test_header(EHash hash) {
+    Header header;
+    header.setHashAlgo(hash);
+    header.setKdfProfile(EKDFProfile::None);
+    header.setKdfMKib(64);
+    header.setKdfT(1);
+    header.setKdfP(1);
+    header.setContainerSize(DEFAULT_CONTAINER_SIZE);
+    header.setFileTableSize(123);
+    header.incrementHeaderVersion();
+
+    auto& salt = header.getSaltData();
+    for (size_t i = 0; i < salt.size(); ++i) {
+        salt[i] = static_cast<uint8_t>(0xA0u + i);
+    }
+
+    header.serialize();
+    return header;
+}
+
+std::array<uint8_t, KEK_SIZE> derive_test_kek(
+    const Botan::secure_vector<char>& password, const Header& header) {
+    auto pwdhash_fam = Botan::PasswordHashFamily::create("Argon2id");
+    if (!pwdhash_fam) {
+        throw std::runtime_error("Argon2id not available in this Botan build");
+    }
+
+    auto pwdhash = pwdhash_fam->from_params(
+        header.getKdfMKib(), header.getKdfT(), header.getKdfP());
+    std::array<uint8_t, KEK_SIZE> kek{};
+    pwdhash->derive_key(kek.data(), kek.size(),
+                        password.data(), password.size(),
+                        header.getSalt().data(), header.getSalt().size());
+    return kek;
+}
+
+std::vector<uint8_t> botan_hmac_full(EHash hash,
+                                     const uint8_t* data,
+                                     size_t size,
+                                     const std::array<uint8_t, KEK_SIZE>& key) {
+    auto mac = Botan::MessageAuthenticationCode::create(botanHmacName(hash));
+    if (!mac) {
+        throw std::runtime_error("HMAC algorithm unavailable: " +
+                                 std::string(botanHmacName(hash)));
+    }
+
+    mac->set_key(key.data(), key.size());
+    mac->update(data, size);
+    auto digest = mac->final();
+    return std::vector<uint8_t>(digest.begin(), digest.end());
+}
+
+std::array<uint8_t, 32> first_32_bytes(const std::vector<uint8_t>& digest) {
+    std::array<uint8_t, 32> out{};
+    std::copy_n(digest.begin(), std::min(digest.size(), out.size()), out.begin());
+    return out;
+}
+
+std::string botan_hash_hex(EHash hash, const std::vector<uint8_t>& data) {
+    auto hasher = Botan::HashFunction::create(botanHashName(hash));
+    if (!hasher) {
+        throw std::runtime_error("Hash algorithm unavailable: " +
+                                 std::string(botanHashName(hash)));
+    }
+    hasher->update(data.data(), data.size());
+    return Botan::hex_encode(hasher->final());
 }
 
 } // namespace
@@ -153,14 +232,17 @@ TEST_F(HeaderLayoutTest, FlagsAt0x0094) {
            "Bytes at 0x0094 must hold flags.";
 }
 
-// Spec 4.2.6: reserved_0 is 8 zero bytes at offset 0x0098.
-TEST_F(HeaderLayoutTest, Reserved0At0x0098_IsZero) {
+// Spec 4.2.6: hash_algo_id is at 0x0098; reserved_0 is 7 zero bytes at 0x0099.
+TEST_F(HeaderLayoutTest, HashAlgoAt0x0098_Reserved0At0x0099_IsZero) {
     header_.increaseFileCount();
     header_.serialize();
 
-    for (size_t i = 0x0098; i < 0x00A0; ++i) {
+    EXPECT_EQ(buf()[0x0098], static_cast<uint8_t>(EHash::SHA_256))
+        << "Spec requires hash_algo_id at offset 0x0098. Default must be SHA-256.";
+
+    for (size_t i = 0x0099; i < 0x00A0; ++i) {
         EXPECT_EQ(buf()[i], 0u)
-            << "Spec requires reserved_0 (8 zero bytes) at offset 0x0098. "
+            << "Spec requires reserved_0 (7 zero bytes) at offset 0x0099. "
                "Byte at 0x" << std::hex << i << " is non-zero.";
     }
 }
@@ -899,6 +981,233 @@ TEST(EnumSpecTest, KDFProfiles_AllFourDefined) {
 // 6. EMPTY FILE ROUNDTRIP — bug regression
 //
 // A zero-byte file must survive create→extract intact.
+// Both the empty entry and the co-present non-empty entry must be correct.
+// ===========================================================================
+
+// ===========================================================================
+// 6. HASH ALGORITHMS - SCEF v1.1 Streebog support
+//
+// Header v1.1 stores hash_algo_id at 0x0098. The byte is HMAC-protected.
+// Header HMAC is always 32 bytes; Streebog-512 is truncated from 64 to 32.
+// File checksums use the selected hash and therefore have variable hex length.
+// ===========================================================================
+
+TEST(EnumSpecTest, HashAlgorithms_AllThreeIdsMatchSpec) {
+    EXPECT_EQ(static_cast<uint8_t>(EHash::SHA_256), 0x01u);
+    EXPECT_EQ(static_cast<uint8_t>(EHash::Streebog_256), 0x02u);
+    EXPECT_EQ(static_cast<uint8_t>(EHash::Streebog_512), 0x03u);
+}
+
+// Spec 5.1.6 / D3: isHmacAvailable() must return true for all three supported
+// algorithms in a standard Botan build. The fallback path (Streebog-512 absent)
+// cannot be exercised without mocking Botan::MessageAuthenticationCode::create;
+// that case is documented as a manual smoke test. This test covers the positive
+// branch: all three algorithms are available and none returns false.
+TEST(HmacAvailabilityTest, AllThreeSupportedHashesAreAvailableInBotan) {
+    EXPECT_TRUE(CryptoManager::isHmacAvailable(EHash::SHA_256))
+        << "HMAC(SHA-256) must be available in the Botan build used by SCEF";
+    EXPECT_TRUE(CryptoManager::isHmacAvailable(EHash::Streebog_256))
+        << "HMAC(Streebog-256) must be available in the Botan build used by SCEF";
+    EXPECT_TRUE(CryptoManager::isHmacAvailable(EHash::Streebog_512))
+        << "HMAC(Streebog-512) must be available in the Botan build used by SCEF. "
+           "If this fails, the fallback to Streebog-256 will activate at runtime.";
+}
+
+TEST(HmacAvailabilityTest, NoneAndUnknownHashReturnFalse) {
+    // EHash::None (0x00) is not a supported hash; isHmacAvailable must return false.
+    EXPECT_FALSE(CryptoManager::isHmacAvailable(EHash::None))
+        << "EHash::None is not a supported hash algorithm.";
+    // An arbitrary out-of-range value cast to EHash must also return false.
+    EXPECT_FALSE(CryptoManager::isHmacAvailable(static_cast<EHash>(0xFF)))
+        << "Unknown hash id 0xFF must not be reported as HMAC-available.";
+}
+
+class HeaderHashRoundTripTest : public ::testing::TestWithParam<EHash> {};
+
+TEST_P(HeaderHashRoundTripTest, SerializeReadPreservesHashAlgo) {
+    Header header;
+    header.setHashAlgo(GetParam());
+    header.serialize();
+
+    Header parsed;
+    parsed.read(header.buffer());
+
+    EXPECT_EQ(parsed.getHashAlgo(), GetParam())
+        << "hash_algo_id must survive Header serialize/read round-trip.";
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    SupportedHashes,
+    HeaderHashRoundTripTest,
+    ::testing::Values(EHash::SHA_256, EHash::Streebog_256, EHash::Streebog_512));
+
+TEST(HeaderHashRoundTripTest, UnknownHashAlgoId0xffThrowsExactError) {
+    Header header;
+    HeaderBuffer raw = header.buffer();
+    raw[POSITION_HASH_ALGO_ID] = 0xFF;
+
+    Header parsed;
+    try {
+        parsed.read(raw);
+        FAIL() << "Header::read must reject unknown hash_algo_id 0xFF";
+    } catch (const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(),
+            "Header::read: unknown hash_algo_id 0xff "
+            "(expected 0x01, 0x02, or 0x03)");
+    }
+}
+
+class HeaderHmacHashTest : public ::testing::Test {
+protected:
+    const Botan::secure_vector<char> password_ =
+        make_secure_vector("unit_hash_password");
+
+    std::array<uint8_t, 32> compute_with_crypto_manager(Header& header, EHash hash) {
+        CryptoManager crypto;
+        crypto.setHashAlgo(hash);
+        crypto.deriveKek(password_, header);
+        auto protectedBytes = header.hmacProtectedBytes();
+        return crypto.computeHmac(protectedBytes.data(), protectedBytes.size());
+    }
+};
+
+TEST_F(HeaderHmacHashTest, HmacSha256RegressionMatchesBotanOutput) {
+    Header header = make_hash_test_header(EHash::SHA_256);
+    auto actual = compute_with_crypto_manager(header, EHash::SHA_256);
+    auto protectedBytes = header.hmacProtectedBytes();
+    auto kek = derive_test_kek(password_, header);
+    auto expectedFull = botan_hmac_full(EHash::SHA_256,
+                                        protectedBytes.data(),
+                                        protectedBytes.size(),
+                                        kek);
+
+    ASSERT_EQ(expectedFull.size(), 32u);
+    EXPECT_EQ(actual, first_32_bytes(expectedFull))
+        << "SHA-256 HMAC path must remain byte-for-byte compatible after hash refactor.";
+}
+
+TEST_F(HeaderHmacHashTest, HmacStreebog256StoresAndReadsFull32ByteOutput) {
+    Header header = make_hash_test_header(EHash::Streebog_256);
+    auto actual = compute_with_crypto_manager(header, EHash::Streebog_256);
+    auto protectedBytes = header.hmacProtectedBytes();
+    auto kek = derive_test_kek(password_, header);
+    auto expectedFull = botan_hmac_full(EHash::Streebog_256,
+                                        protectedBytes.data(),
+                                        protectedBytes.size(),
+                                        kek);
+    ASSERT_EQ(expectedFull.size(), 32u);
+    ASSERT_EQ(actual, first_32_bytes(expectedFull));
+
+    header.storeHmac(actual);
+    Header parsed;
+    parsed.read(header.buffer());
+
+    EXPECT_EQ(parsed.storedHmac(), actual)
+        << "Streebog-256 HMAC must be stored as the full 32-byte digest.";
+}
+
+TEST_F(HeaderHmacHashTest, HmacStreebog512IsTruncatedTo32Bytes) {
+    Header header = make_hash_test_header(EHash::Streebog_512);
+    auto actual = compute_with_crypto_manager(header, EHash::Streebog_512);
+    auto protectedBytes = header.hmacProtectedBytes();
+    auto kek = derive_test_kek(password_, header);
+    auto expectedFull = botan_hmac_full(EHash::Streebog_512,
+                                        protectedBytes.data(),
+                                        protectedBytes.size(),
+                                        kek);
+
+    ASSERT_EQ(expectedFull.size(), 64u);
+    EXPECT_EQ(actual, first_32_bytes(expectedFull))
+        << "Header HMAC field is fixed at 32 bytes; Streebog-512 must be truncated.";
+}
+
+TEST_F(HeaderHmacHashTest, TamperingHashAlgoIdByteBreaksStoredHmac) {
+    Header header = make_hash_test_header(EHash::Streebog_512);
+    auto originalHmac = compute_with_crypto_manager(header, EHash::Streebog_512);
+    header.storeHmac(originalHmac);
+
+    HeaderBuffer tampered = header.buffer();
+    tampered[POSITION_HASH_ALGO_ID] = static_cast<uint8_t>(EHash::Streebog_256);
+
+    Header parsed;
+    parsed.read(tampered);
+    auto recomputed = compute_with_crypto_manager(parsed, parsed.getHashAlgo());
+
+    EXPECT_NE(recomputed, parsed.storedHmac())
+        << "hash_algo_id at 0x0098 is inside the HMAC-protected header region.";
+}
+
+class FileChecksumHashTest : public ::testing::Test {
+protected:
+    fs::path tmp_dir_;
+    fs::path input_dir_;
+    fs::path container_dir_;
+
+    void SetUp() override {
+        tmp_dir_ = make_temp_dir("checksum_hash");
+        input_dir_ = tmp_dir_ / "inputs";
+        container_dir_ = tmp_dir_ / "container";
+        fs::create_directories(input_dir_);
+        fs::create_directories(container_dir_);
+    }
+
+    void TearDown() override {
+        fs::remove_all(tmp_dir_);
+    }
+
+    std::string write_container_and_get_checksum(EHash hash,
+                                                 const std::vector<uint8_t>& payload) {
+        fs::path src = input_dir_ / "known.bin";
+        write_file(src, payload);
+
+        FileManager fm;
+        fm.init({src.string()}, (container_dir_ / CONTAINER_FILE_NAME).string(),
+                DEFAULT_CONTAINER_SIZE, DEFAULT_MAX_TABLE_SIZE, /*create_new=*/true,
+                make_secure_vector("checksum_hash_password"));
+        fm.setHashAlgo(hash);
+        fm.setKdfParams(EKDFProfile::None, 64, 1, 1);
+        fm.write();
+
+        const auto& table = fm.getFilesTable();
+        if (table.size() != 1u) {
+            throw std::runtime_error("expected exactly one file table entry");
+        }
+        return table[0].checksum;
+    }
+};
+
+TEST_F(FileChecksumHashTest, Streebog512ChecksumForKnownInputIs128HexChars) {
+    const std::vector<uint8_t> payload = {
+        0x53, 0x43, 0x45, 0x46, 0x20, 0x53, 0x74, 0x72,
+        0x65, 0x65, 0x62, 0x6F, 0x67, 0x20, 0x35, 0x31, 0x32
+    };
+
+    const std::string checksum =
+        write_container_and_get_checksum(EHash::Streebog_512, payload);
+
+    ASSERT_EQ(checksum.size(), 128u);
+    EXPECT_EQ(checksum, botan_hash_hex(EHash::Streebog_512, payload))
+        << "Streebog-512 file checksum must be the full 64-byte digest as 128 hex chars.";
+}
+
+TEST_F(FileChecksumHashTest, Streebog256ChecksumForKnownInputIs64HexChars) {
+    const std::vector<uint8_t> payload = {
+        0x53, 0x43, 0x45, 0x46, 0x20, 0x53, 0x74, 0x72,
+        0x65, 0x65, 0x62, 0x6F, 0x67, 0x20, 0x32, 0x35, 0x36
+    };
+
+    const std::string checksum =
+        write_container_and_get_checksum(EHash::Streebog_256, payload);
+
+    ASSERT_EQ(checksum.size(), 64u);
+    EXPECT_EQ(checksum, botan_hash_hex(EHash::Streebog_256, payload))
+        << "Streebog-256 file checksum must be the full 32-byte digest as 64 hex chars.";
+}
+
+// ===========================================================================
+// 7. EMPTY FILE ROUNDTRIP - bug regression
+//
+// A zero-byte file must survive create->extract intact.
 // Both the empty entry and the co-present non-empty entry must be correct.
 // ===========================================================================
 

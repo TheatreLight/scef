@@ -29,6 +29,7 @@ import pytest
 from conftest import (
     DEFAULT_PASSWORD,
     DEFAULT_CONTAINER_SIZE,
+    FAST_KDF_ARGS,
     create_container,
     add_file,
     list_container,
@@ -47,6 +48,10 @@ HEADER_SIZE = 4096
 DEFAULT_MAX_TABLE_SIZE = 65536
 MINIMAL_CONTAINER_SIZE = 4 * (HEADER_SIZE + DEFAULT_MAX_TABLE_SIZE)
 SCEF_MAGIC = b"SCEF"
+POSITION_HASH_ALGO_ID = 0x0098
+HASH_SHA256 = 0x01
+HASH_STREEBOG256 = 0x02
+HASH_STREEBOG512 = 0x03
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +73,65 @@ def spec_slot_offset(container_size: int, percent: int) -> int:
     if percent == 0:
         return 0
     return (container_size * percent // 100 // HEADER_SIZE) * HEADER_SIZE
+
+
+def header_hash_algo_id(container_dir: pathlib.Path) -> int:
+    data = container_file(container_dir).read_bytes()
+    return data[POSITION_HASH_ALGO_ID]
+
+
+def create_container_with_options(
+    container_dir: pathlib.Path,
+    files: list[pathlib.Path],
+    *,
+    cipher: str | None = None,
+    hash_name: str | None = None,
+):
+    args = ["create", "-c", str(container_dir)]
+    for file in files:
+        args += ["-f", str(file)]
+    args += ["-s", str(DEFAULT_CONTAINER_SIZE)]
+    if cipher is not None:
+        args += ["--cipher", cipher]
+    if hash_name is not None:
+        args += ["--hash", hash_name]
+    args += FAST_KDF_ARGS
+    return run_scef(args)
+
+
+# ---------------------------------------------------------------------------
+# Tests: hash algorithm selection
+# ---------------------------------------------------------------------------
+
+class TestCreateHashSelection:
+    """Create stores the selected SCEF v1.1 hash_algo_id byte at offset 0x0098."""
+
+    def test_hash_streebog256_sets_hash_algo_id_0x02(self, tmp_path):
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+        src = make_text_file(tmp_path / "data.txt", "streebog-256\n")
+
+        create_container_with_options(cdir, [src], hash_name="streebog256")
+
+        assert header_hash_algo_id(cdir) == HASH_STREEBOG256
+
+    def test_hash_streebog512_sets_hash_algo_id_0x03(self, tmp_path):
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+        src = make_text_file(tmp_path / "data.txt", "streebog-512\n")
+
+        create_container_with_options(cdir, [src], hash_name="streebog512")
+
+        assert header_hash_algo_id(cdir) == HASH_STREEBOG512
+
+    def test_kuznechik_without_hash_defaults_to_streebog512_id_0x03(self, tmp_path):
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+        src = make_text_file(tmp_path / "data.txt", "kuznechik default hash\n")
+
+        create_container_with_options(cdir, [src], cipher="kuznechik")
+
+        assert header_hash_algo_id(cdir) == HASH_STREEBOG512
 
 
 # ---------------------------------------------------------------------------

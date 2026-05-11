@@ -1,4 +1,4 @@
-# Container Format (SCEF v1.0)
+# Container Format (SCEF v1.1)
 
 ## Overview
 
@@ -41,7 +41,7 @@ Total size: **4096 bytes**.
 |--------|------|-------|------|---------------------|
 | `0x0000` | 4 | `magic` | `uint8[4]` | `"SCEF"` = `0x53 0x43 0x45 0x46` |
 | `0x0004` | 2 | `version_major` | `uint16_le` | `1` |
-| `0x0006` | 2 | `version_minor` | `uint16_le` | `0` |
+| `0x0006` | 2 | `version_minor` | `uint16_le` | `1` (v1.1; v1.0 is not supported) |
 | `0x0008` | 4 | `header_size` | `uint32_le` | `4096` |
 | `0x000C` | 1 | `cipher_id` | `uint8` | `0x01` = AES-256-GCM, `0x02` = Kuznechik-GCM |
 | `0x000D` | 1 | `kdf_id` | `uint8` | `0x01` = Argon2id |
@@ -60,19 +60,47 @@ Total size: **4096 bytes**.
 | `0x008C` | 4 | `block_size` | `uint32_le` | Data block plaintext size (default 65536) |
 | `0x0090` | 4 | `header_version` | `uint32_le` | Monotonic update counter (incremented on each write) |
 | `0x0094` | 4 | `flags` | `uint32_le` | Bit flags (reserved, currently 0) |
-| `0x0098` | 8 | `reserved_0` | `uint8[8]` | Reserved (zeros) |
-| `0x00A0` | 32 | `header_hmac` | `uint8[32]` | **HMAC-SHA256** of bytes `[0x0000..0x009F]` using KEK |
+| `0x0098` | 1 | `hash_algo_id` | `uint8` | `0x01` = SHA-256, `0x02` = Streebog-256, `0x03` = Streebog-512. Selects the algorithm for both header HMAC and file-entry checksums. |
+| `0x0099` | 7 | `reserved_0` | `uint8[7]` | Reserved (zeros) |
+| `0x00A0` | 32 | `header_hmac` | `uint8[32]` | **HMAC-`<hash_algo_id>`** of bytes `[0x0000..0x009F]` using KEK; truncated to 32 bytes if hash output is larger (see below) |
 | `0x00C0` | 320 | `reserved` | `uint8[320]` | Reserved (zeros) |
 | `0x0200` | 512 | `json_metadata` | `uint8[512]` | UTF-8 JSON metadata (optional, null-terminated) |
 | `0x0400` | 3072 | `padding` | `uint8[3072]` | Zero-padding to reach 4096 bytes total |
 
 ### HMAC Coverage
 
-The `header_hmac` at `0x00A0` covers bytes `[0x0000..0x009F]` (160 bytes = `HMAC_PROTECTED_SIZE`). This includes all fields from `magic` through `reserved_0` — everything except the HMAC itself and the fields after it.
+The `header_hmac` at `0x00A0` covers bytes `[0x0000..0x009F]` (160 bytes = `HMAC_PROTECTED_SIZE`). This region includes all fields from `magic` through `reserved_0`, including `hash_algo_id` at `0x0098`. Tampering `hash_algo_id` breaks HMAC verification.
 
-The HMAC key is the **KEK** (not the DEK). This means header integrity can only be verified after Argon2id KDF is run. The sequence is: derive KEK → verify HMAC → unwrap DEK (authenticate-then-decrypt).
+The HMAC key is the **KEK** (not the DEK). Header integrity can only be verified after Argon2id KDF is run. The sequence is: derive KEK → verify HMAC → unwrap DEK (authenticate-then-decrypt).
+
+**Algorithm selection:** The HMAC algorithm is determined by `hash_algo_id`:
+
+| `hash_algo_id` | Botan algorithm string | HMAC output | Stored as |
+|----------------|----------------------|-------------|-----------|
+| `0x01` | `HMAC(SHA-256)` | 32 bytes | 32 bytes (no truncation) |
+| `0x02` | `HMAC(Streebog-256)` | 32 bytes | 32 bytes (no truncation) |
+| `0x03` | `HMAC(Streebog-512)` | 64 bytes | First 32 bytes (truncated per RFC 2104 / FIPS 198) |
+
+**Backward compatibility:** `Header::read` throws `"Unsupported container version"` for any version other than 1.1. v1.0 containers (with `version_minor = 0`) cannot be opened by v1.1+ code.
 
 Source: `include/Header.h:61`, `src/FileManager.cpp:244-265`
+
+---
+
+## Hash Algorithm Selection
+
+Source: `src/cli/commands.cpp`, `include/enums/EHash.h`
+
+When creating a container, the hash algorithm is chosen as follows:
+
+1. If `--hash <algo>` is provided on the command line, that algorithm is used.
+2. Otherwise, the default is determined by the cipher:
+   - `AES-256-GCM` → `SHA-256` (`hash_algo_id = 0x01`)
+   - `Kuznechik-GCM` → `Streebog-512` (`hash_algo_id = 0x03`)
+
+**Streebog-512 fallback:** If Streebog-512 is requested but `Botan::MessageAuthenticationCode::create("HMAC(Streebog-512)")` returns null (Botan built without it), the create path falls back to Streebog-256 and emits `LOG_WARN`. If Streebog-256 is also unavailable, `LOG_ERROR` and exit. On open, an unsupported algorithm in an existing container is a hard error (no silent fallback).
+
+The same algorithm controls both the header HMAC and the per-file checksum in the file table.
 
 ---
 
@@ -132,7 +160,7 @@ Total `file_table_size` = `N + 12 + 16`. The field `file_table_size` in the head
       "size": 1048576,
       "offset": 69632,
       "chunks": 16,
-      "checksum_sha256": "A1B2C3D4..."
+      "checksum": "A1B2C3D4..."
     }
   ]
 }
@@ -145,7 +173,7 @@ Total `file_table_size` = `N + 12 + 16`. The field `file_table_size` in the head
 | `files[].size` | uint64 | Plaintext file size in bytes (actual bytes written, not filesystem stat) |
 | `files[].offset` | uint64 | Container byte offset of the first encrypted chunk of this file |
 | `files[].chunks` | uint64 | Number of encrypted chunks |
-| `files[].checksum_sha256` | string | Hex-encoded uppercase SHA-256 of the complete plaintext |
+| `files[].checksum` | string | Hex-encoded uppercase hash of the complete plaintext. Length: 64 hex chars for SHA-256 or Streebog-256; 128 hex chars for Streebog-512. Algorithm matches `hash_algo_id` from the header. |
 
 ---
 

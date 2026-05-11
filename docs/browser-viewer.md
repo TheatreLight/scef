@@ -13,7 +13,7 @@ browser/
 │   ├── app.js              — main orchestration
 │   ├── header.js           — binary header parser, slot offset computation
 │   ├── kdf.js              — Argon2id via hash-wasm
-│   ├── crypto.js           — WebCrypto: HMAC-SHA256, AES-256-GCM
+│   ├── crypto.js           — WebCrypto: HMAC-SHA256 (SHA-256 only), AES-256-GCM
 │   ├── filetable.js        — file table decrypt + JSON parse
 │   ├── download.js         — chunk decryption, streaming + Blob download, ZIP
 │   ├── ui.js               — DOM helpers, status messages, file list rendering
@@ -163,6 +163,7 @@ function validateKdfParams(header) → string|null
 | `blockSize` | number | |
 | `headerVersion` | number | |
 | `flags` | number | |
+| `hashAlgoId` | number | `0x01` = SHA-256, `0x02` = Streebog-256, `0x03` = Streebog-512 |
 | `headerHmac` | Uint8Array(32) | |
 | `hmacProtectedBytes` | Uint8Array(160) | bytes [0x0000..0x009F], copied |
 
@@ -183,7 +184,7 @@ Uses `hashwasm.argon2id()` from the UMD WASM bundle. The WASM module is loaded s
 async function importKey(keyBytes, algorithm, usages) → Promise<CryptoKey>
     // algorithm: 'AES-GCM' or 'HMAC'
 
-// Compute HMAC-SHA256
+// Compute HMAC-SHA256 (SHA-256 only; browser viewer does not support GOST hashes)
 async function computeHMAC(key, data) → Promise<Uint8Array(32)>
 
 // Constant-time Uint8Array comparison
@@ -221,11 +222,11 @@ async function readFileTable(file, header, slotOffset, dekKey)
 
 ```js
 {
-    name:           string,
-    size:           number,
-    offset:         number,   // container byte offset of first chunk
-    chunks:         number,
-    checksumSha256: string    // hex uppercase
+    name:     string,
+    size:     number,
+    offset:   number,   // container byte offset of first chunk
+    chunks:   number,
+    checksum: string    // hex uppercase; always 64 chars (browser only opens SHA-256 containers)
 }
 ```
 
@@ -297,7 +298,7 @@ let activeFileTable = null;
 |----------|-------------|
 | `tryAutoLoad()` | `fetch('./container.scef')` — works on localhost and Firefox `file://` |
 | `onFileSelected(event)` | Fallback: manual file picker |
-| `validateAndPromptPassword()` | `findValidSlots()` → cipher check → show password UI |
+| `validateAndPromptPassword()` | `findValidSlots()` → cipher check + `hash_algo_id` check (rejects non-SHA-256) → show password UI |
 | `findValidSlots(file)` | Read all 4 slot headers, return those with valid magic + KDF params |
 | `onUnlock()` | Full auth sequence: Argon2id → HMAC verify → DEK unwrap → file table decrypt |
 | `onLock()` | `activeDEK.fill(0)`, clear state, return to password prompt |
@@ -308,6 +309,7 @@ let activeFileTable = null;
 | Limitation | Reason |
 |-----------|--------|
 | AES-256-GCM only | Kuznechik-GCM requires WASM compilation; deferred |
+| SHA-256 hash only | GOST Streebog (Streebog-256 / Streebog-512) is not available in WebCrypto; browser viewer explicitly rejects containers with `hash_algo_id != 0x01` with a user-facing error |
 | Read-only | No write operations via WebCrypto |
 | Max Argon2id memory: 2047 MiB | WASM typed arrays capped at 2^31 bytes |
 | Blob download limit: 500 MiB | Browser heap; use streaming (Chrome/Edge) for larger files |

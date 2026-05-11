@@ -20,7 +20,7 @@ FileTable::~FileTable() {
     LOG_INFO("FileTable::~FileTable()");
 }
 
-void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checkSum,
+void FileTable::addFileEntry(const std::string& pathToFile, const std::string& checksum,
     uint64_t offset, uint64_t actual_size)
 {
     LOG_INFO("Call FileTable::addFileEntry()");
@@ -57,15 +57,15 @@ void FileTable::addFileEntry(const std::string& pathToFile, const std::string& c
     file.chunks = (actual_size == 0) ? 0
                 : (actual_size / BLOCK_SIZE + (actual_size % BLOCK_SIZE != 0));
     file.offset = offset;
-    file.checksum_sha256 = checkSum;
+    file.checksum = checksum;
 
     filesTable_.push_back(file);
-    LOG_DEBUG("FileTable::addFileEntry: '%s', size=%llu, chunks=%llu, offset=%llu, sha256=%.16s...",
+    LOG_DEBUG("FileTable::addFileEntry: '%s', size=%llu, chunks=%llu, offset=%llu, checksum=%.16s...",
               file.name.c_str(),
               static_cast<unsigned long long>(file.size),
               static_cast<unsigned long long>(file.chunks),
               static_cast<unsigned long long>(file.offset),
-              file.checksum_sha256.c_str());
+              file.checksum.c_str());
 }
 
 std::string FileTable::serialize() {
@@ -78,7 +78,7 @@ std::string FileTable::serialize() {
         tmp["size"] = file.size;
         tmp["offset"] = file.offset;
         tmp["chunks"] = file.chunks;
-        tmp["checksum_sha256"] = file.checksum_sha256;
+        tmp["checksum"] = file.checksum;
         j["files"].push_back(tmp);
     }
     return j.dump();
@@ -96,7 +96,7 @@ void FileTable::deserialize(const std::string& data) {
         entry.size             = file["size"].get<uint64_t>();
         entry.offset           = file["offset"].get<uint64_t>();
         entry.chunks           = file["chunks"].get<uint64_t>();
-        entry.checksum_sha256  = file["checksum_sha256"].get<std::string>();
+        entry.checksum         = file["checksum"].get<std::string>();
         filesTable_.push_back(entry);
     }
 
@@ -132,7 +132,7 @@ std::string FileTable::to_string(bool isFull) const {
         if (isFull) {
             ss << "  offset:          " << f.offset << "\n";
             ss << "  chunks:          " << f.chunks << "\n";
-            ss << "  checksum_sha256: " << f.checksum_sha256 << "\n";
+            ss << "  checksum:        " << f.checksum << "\n";
         }
     }
     return ss.str();

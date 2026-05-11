@@ -3,6 +3,7 @@
 #include "args.h"
 #include "BrowserViewer.h"
 #include "ContainerName.h"
+#include "CryptoManager.h"
 #include "FileManager.h"
 #include "Header.h"
 #include "KdfProfiles.h"
@@ -132,6 +133,46 @@ void printKdfSelection(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t
               << ", p=" << p << ")\n";
 }
 
+void printCipherSelection(ECipher cipher)
+{
+    std::string name;
+    switch (cipher) {
+        case ECipher::AES_256_GCM:   name = "AES-256-GCM"; break;
+        case ECipher::Kuznechik_GCM: name = "Kuznechik-GCM (GOST 34.12-2015)"; break;
+        default:                     name = "Unknown"; break;
+    }
+    std::cout << "Cipher: " << name << "\n";
+}
+
+void printHashSelection(EHash hash)
+{
+    std::cout << "Hash: " << hashDisplayName(hash) << "\n";
+}
+
+int resolveHashWithFallback(const ParsedArgs& args, ECipher cipher, EHash& out_hash)
+{
+    out_hash = args.hash_algo.value_or(defaultHashForCipher(cipher));
+
+    if (!isSupportedHash(out_hash)) {
+        LOG_ERROR("Unsupported hash algorithm id: 0x%02x", static_cast<unsigned>(out_hash));
+        return EXIT_FAILURE;
+    }
+
+    // Auto-fallback applies only to Streebog-512 (the default for Kuznechik cipher).
+    // An explicit --hash streebog256 that is unavailable is a hard error: silent
+    // downgrade of an explicit user choice would violate the principle of least surprise.
+    if (out_hash == EHash::Streebog_512 && !CryptoManager::isHmacAvailable(EHash::Streebog_512)) {
+        LOG_WARN("Streebog-512 unavailable in this Botan build; falling back to Streebog-256");
+        out_hash = EHash::Streebog_256;
+    }
+
+    if (!CryptoManager::isHmacAvailable(out_hash)) {
+        LOG_ERROR("Hash algorithm unavailable: %s", std::string(botanHmacName(out_hash)).c_str());
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
 int confirmWeakPassword(const PasswordStrengthEstimator::Result& result, bool assumeYes)
 {
     std::cerr << result.warning << "\n";
@@ -211,6 +252,14 @@ int cmd_create(ParsedArgs& args)
     }
     printKdfSelection(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
 
+    const ECipher effectiveCipher = args.cipher.value_or(ECipher::AES_256_GCM);
+    EHash effectiveHash = EHash::None;
+    if (EXIT_FAILURE == resolveHashWithFallback(args, effectiveCipher, effectiveHash)) {
+        return EXIT_FAILURE;
+    }
+    printCipherSelection(effectiveCipher);
+    printHashSelection(effectiveHash);
+
     // Compute the full container file path.
     std::string containerFilePath;
     if (!args.containerName.empty()) {
@@ -238,7 +287,8 @@ int cmd_create(ParsedArgs& args)
         FileManager fileManager;
         fileManager.init(args.fileList, containerFilePath, args.container_size,
                          args.max_table_size, /*create_new=*/true, password);
-        fileManager.setCipher(args.cipher.value_or(ECipher::AES_256_GCM));
+        fileManager.setCipher(effectiveCipher);
+        fileManager.setHashAlgo(effectiveHash);
         fileManager.setKdfParams(kdf_profile, kdf_m_kib, kdf_t, kdf_p);
         fileManager.write();
 
@@ -286,6 +336,8 @@ int cmd_add(ParsedArgs& args)
         FileManager fileManager;
         fileManager.init(args.fileList, containerFilePath, 0, DEFAULT_MAX_TABLE_SIZE,
                          /*create_new=*/false, password);
+        printCipherSelection(fileManager.getCipher());
+        printHashSelection(fileManager.getHashAlgo());
         fileManager.add();
     } catch (const std::exception& e) {
         LOG_ERROR("add failed: %s", e.what());
@@ -317,6 +369,8 @@ int cmd_list(ParsedArgs& args)
         FileManager fileManager;
         fileManager.init(args.fileList, containerFilePath, 0, DEFAULT_MAX_TABLE_SIZE,
                          /*create_new=*/false, password);
+        printCipherSelection(fileManager.getCipher());
+        printHashSelection(fileManager.getHashAlgo());
         fileManager.printFilesTable();
     } catch (const std::exception& e) {
         LOG_ERROR("list failed: %s", e.what());
@@ -352,6 +406,8 @@ int cmd_extract(ParsedArgs& args)
         FileManager fileManager;
         fileManager.init(args.fileList, containerFilePath, 0, DEFAULT_MAX_TABLE_SIZE,
                          /*create_new=*/false, password);
+        printCipherSelection(fileManager.getCipher());
+        printHashSelection(fileManager.getHashAlgo());
         fileManager.extract(args.outputPath);
     } catch (const std::exception& e) {
         LOG_ERROR("extract failed: %s", e.what());

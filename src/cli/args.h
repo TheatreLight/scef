@@ -2,6 +2,7 @@
 #define CLI_ARGS_H
 
 #include "enums/ECiphers.h"
+#include "enums/EHash.h"
 
 #include <cstdint>
 #include <optional>
@@ -21,6 +22,7 @@ struct ParsedArgs {
     uint32_t                 kdf_t           = 0; // 0 = not specified
     uint32_t                 kdf_p           = 0; // 0 = not specified
     std::optional<ECipher>   cipher;
+    std::optional<EHash>     hash_algo;
     std::string              log_level_name;
     bool                     assumeYes       = false;
     bool                     strengthOnly    = false;

@@ -41,7 +41,8 @@ public:
                                          int kdfT,
                                          int kdfP,
                                          int cipherIndex,
-                                         bool includeBrowserViewer);
+                                         bool includeBrowserViewer,
+                                         int hashIndex);
 
     Q_INVOKABLE QVariantMap estimatePasswordStrength(const QString& password,
                                                       int kdfProfileIndex) const;

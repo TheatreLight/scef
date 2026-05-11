@@ -2,6 +2,7 @@
 #define HEADER_H
 
 #include "enums/ECiphers.h"
+#include "enums/EHash.h"
 #include "enums/EKDF.h"
 #include "enums/EKDFProfile.h"
 
@@ -25,7 +26,7 @@ constexpr uint64_t DEFAULT_CONTAINER_SIZE = MINIMAL_CONTAINER_SIZE + 4ULL * BLOC
 
 constexpr std::array<char, 4> HEADER_MAGIC         = {'S', 'C', 'E', 'F'};
 constexpr uint16_t            HEADER_VERSION_MAJOR = 1;
-constexpr uint16_t            HEADER_VERSION_MINOR = 0;
+constexpr uint16_t            HEADER_VERSION_MINOR = 1;
 constexpr size_t              NONCE_SIZE            = 12;
 constexpr size_t              AUTH_TAG_SIZE         = 16;
 constexpr uint32_t            ENCRYPTED_BLOCK_SIZE  = BLOCK_SIZE + NONCE_SIZE + AUTH_TAG_SIZE;
@@ -52,7 +53,8 @@ constexpr size_t POSITION_FILE_COUNT      = 0x0088; // uint32_le
 constexpr size_t POSITION_BLOCK_SIZE      = 0x008C; // uint32_le
 constexpr size_t POSITION_HEADER_VERSION  = 0x0090; // uint32_le
 constexpr size_t POSITION_FLAGS           = 0x0094; // uint32_le
-constexpr size_t POSITION_RESERVED_0      = 0x0098; // uint8[8]
+constexpr size_t POSITION_HASH_ALGO_ID    = 0x0098; // uint8
+constexpr size_t POSITION_RESERVED_0      = 0x0099; // uint8[7]
 constexpr size_t POSITION_HEADER_HMAC     = 0x00A0; // uint8[32]
 constexpr size_t POSITION_RESERVED        = 0x00C0; // uint8[320]
 constexpr size_t POSITION_JSON_METADATA   = 0x0200; // uint8[512]
@@ -64,11 +66,11 @@ constexpr size_t HMAC_PROTECTED_SIZE = 0x00A0;
 using HeaderBuffer = std::array<uint8_t, HEADER_SIZE>;
 
 /*
-Spec Table 4.2 -- SCEF v1.0 header layout:
+Spec Table 4.2 -- SCEF v1.1 header layout:
 
 | 0x0000 | 4  | magic            | uint32_le   | 0x46454353 "SCEF"                              |
 | 0x0004 | 2  | version_major    | uint16_le   | = 1                                            |
-| 0x0006 | 2  | version_minor    | uint16_le   | = 0                                            |
+| 0x0006 | 2  | version_minor    | uint16_le   | = 1                                            |
 | 0x0008 | 4  | header_size      | uint32_le   | = 4096                                         |
 | 0x000C | 1  | cipher_id        | uint8       | 0x01 = AES-256-GCM, 0x02 = Kuznechik-GCM      |
 | 0x000D | 1  | kdf_id           | uint8       | 0x01 = Argon2id                                |
@@ -87,8 +89,9 @@ Spec Table 4.2 -- SCEF v1.0 header layout:
 | 0x008C | 4  | block_size       | uint32_le   | Data block size in bytes (default 65536)       |
 | 0x0090 | 4  | header_version   | uint32_le   | Monotonic update counter                       |
 | 0x0094 | 4  | flags            | uint32_le   | Bit flags                                      |
-| 0x0098 | 8  | reserved_0       | uint8[8]    | Reserved (zeros)                               |
-| 0x00A0 | 32 | header_hmac      | uint8[32]   | HMAC-SHA256 of bytes [0x0000..0x009F]          |
+| 0x0098 | 1  | hash_algo_id     | uint8       | 0x01 SHA-256, 0x02 Streebog-256, 0x03 Streebog-512 |
+| 0x0099 | 7  | reserved_0       | uint8[7]    | Reserved (zeros)                               |
+| 0x00A0 | 32 | header_hmac      | uint8[32]   | HMAC of bytes [0x0000..0x009F] using algorithm selected by hash_algo_id, truncated to 32 bytes |
 | 0x00C0 | 320| reserved         | uint8[320]  | Reserved (zeros)                               |
 | 0x0200 | 512| json_metadata    | uint8[512]  | UTF-8 JSON metadata                            |
 | 0x0400 | 3072| padding         | uint8[3072] | Zero padding to 4096 bytes                     |
@@ -126,6 +129,8 @@ public:
     void incrementHeaderVersion();
     ECipher getCipher() const noexcept { return cipher_; }
     void setCipher(ECipher c) noexcept { cipher_ = c; }
+    EHash getHashAlgo() const noexcept { return hash_algo_; }
+    void setHashAlgo(EHash h) noexcept { hash_algo_ = h; }
 
     // KDF parameter setters — call before initCryptoForCreate() on new containers.
     void setKdfProfile(EKDFProfile profile);
@@ -198,7 +203,8 @@ private:
     uint32_t block_size_                             = BLOCK_SIZE;
     uint32_t header_version_                         = 0;
     uint32_t flags_                                  = 0;
-    std::array<uint8_t, 8> reserved_0_               = {};
+    EHash hash_algo_                                 = EHash::SHA_256;
+    std::array<uint8_t, 7> reserved_0_               = {};
     std::array<uint8_t, 32> header_hmac_             = {};
     std::array<uint8_t, 320> reserved_               = {};
     std::array<uint8_t, 512> json_metadata_          = {};

@@ -98,7 +98,7 @@ async function main() {
     console.log('\n--- Files ---');
     obj.files.forEach((f, i) => {
         console.log('[' + i + '] ' + f.name + ' (' + f.size + ' bytes, ' + f.chunks + ' chunk(s), offset=' + f.offset + ')');
-        console.log('    SHA-256: ' + f.checksum_sha256);
+        console.log('    Checksum: ' + f.checksum);
     });
     console.log('next_write_offset:', obj.next_write_offset);
 

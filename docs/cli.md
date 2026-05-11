@@ -25,6 +25,7 @@ scef create -c <container_dir> -f <file> [-f <file> ...] -s <size_bytes>
             [--name <filename>]
             [--max_table_size <bytes>]
             [--kdf-profile <name> | --kdf-m <MiB> --kdf-t <n> --kdf-p <n>]
+            [--hash <algo>]
 ```
 
 **Required arguments:**
@@ -45,8 +46,28 @@ scef create -c <container_dir> -f <file> [-f <file> ...] -s <size_bytes>
 | `--kdf-m <MiB>` | — | Manual Argon2id memory in MiB (1–4096; below 8 prints a warning) |
 | `--kdf-t <n>` | — | Manual Argon2id iterations (1–100) |
 | `--kdf-p <n>` | — | Manual Argon2id parallelism (1–64) |
+| `--hash <algo>` | cipher-dependent | Hash algorithm for header HMAC and file checksums. See table below. |
 
 `--kdf-profile` and `--kdf-m/t/p` are mutually exclusive. Manual KDF parameters are individually optional; unspecified ones fall back to the `default` profile values.
+
+**Hash algorithm (`--hash`):**
+
+| Value | Algorithm | `hash_algo_id` |
+|-------|-----------|----------------|
+| `sha256`, `sha-256` | SHA-256 | `0x01` |
+| `streebog256`, `streebog-256` | Streebog-256 (ГОСТ Р 34.11-2012) | `0x02` |
+| `streebog512`, `streebog-512` | Streebog-512 (ГОСТ Р 34.11-2012) | `0x03` |
+
+**Defaults when `--hash` is omitted:**
+
+| Cipher | Default hash |
+|--------|-------------|
+| `aes` (AES-256-GCM) | `sha256` |
+| `kuznechik` (Kuznechik-GCM) | `streebog512` |
+
+**Streebog-512 fallback:** If Streebog-512 is requested (explicitly or by default) but the Botan build does not provide `HMAC(Streebog-512)`, the CLI automatically falls back to Streebog-256 and emits a `WARNING` log message. If Streebog-256 is also unavailable, the command exits with an error. There is no silent fallback on open — a container that was created with a given algorithm must be opened with a Botan build that supports it.
+
+Source: `src/cli/args.h`, `src/cli/args.cpp`, `src/cli/commands.cpp`
 
 **Sequence:**
 1. Reads password from stdin.
@@ -141,7 +162,7 @@ scef extract -c <container_dir> -o <output_dir> [--name <filename>] [-f <file> .
 
 Path traversal protection: file names from the container are sanitized with `std::filesystem::path::filename()`. Names that resolve to `.` or `..` throw an error.
 
-After extraction, SHA-256 checksums are verified against the values in the file table.
+After extraction, checksums are verified against the values in the file table using the algorithm recorded in `hash_algo_id` (SHA-256, Streebog-256, or Streebog-512).
 
 **Example — extract all:**
 

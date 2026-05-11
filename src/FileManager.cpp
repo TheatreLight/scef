@@ -40,6 +40,41 @@ void validate_supported_cipher(const char* context, ECipher cipher) {
     }
 }
 
+std::string unsupported_hash_message(const char* context, EHash hash) {
+    std::ostringstream ss;
+    ss << context << ": unsupported hash_algo_id 0x"
+       << std::hex << std::setfill('0') << std::setw(2)
+       << static_cast<unsigned>(hash)
+       << " (expected 0x01 SHA-256, 0x02 Streebog-256, or 0x03 Streebog-512)";
+    return ss.str();
+}
+
+void validate_supported_hash(const char* context, EHash hash) {
+    if (!isSupportedHash(hash)) {
+        throw std::invalid_argument(unsupported_hash_message(context, hash));
+    }
+}
+
+EHash resolve_hash_for_create(EHash requested, ECipher cipher) {
+    EHash effective = requested != EHash::None ? requested : defaultHashForCipher(cipher);
+    validate_supported_hash("FileManager::resolve_hash_for_create", effective);
+
+    // Auto-fallback applies only to Streebog-512 (the default for Kuznechik cipher).
+    // An explicit --hash streebog256 that is unavailable is a hard error: silent
+    // downgrade of an explicit user choice would violate the principle of least surprise.
+    if (effective == EHash::Streebog_512 &&
+        !CryptoManager::isHmacAvailable(EHash::Streebog_512)) {
+        LOG_WARN("Streebog-512 unavailable in this Botan build; falling back to Streebog-256");
+        effective = EHash::Streebog_256;
+    }
+
+    if (!CryptoManager::isHmacAvailable(effective)) {
+        throw std::runtime_error("Hash algorithm unavailable: " +
+                                 std::string(botanHmacName(effective)));
+    }
+    return effective;
+}
+
 } // namespace
 
 FileManager::FileManager() {
@@ -194,9 +229,19 @@ void FileManager::setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, 
 }
 
 void FileManager::setCipher(ECipher c) {
-    LOG_INFO("Call FileManager::setCipher(): cipher_id=0x%02x", static_cast<unsigned>(c));
+    LOG_INFO("Call FileManager::setCipher(): cipher_id=0x%02x (%s)",
+             static_cast<unsigned>(c), std::string(cipherDisplayName(c)).c_str());
     validate_supported_cipher("FileManager::setCipher", c);
     desiredCipher_ = c;
+}
+
+void FileManager::setHashAlgo(EHash h) {
+    LOG_INFO("Call FileManager::setHashAlgo(): hash_algo_id=0x%02x (%s)",
+             static_cast<unsigned>(h), std::string(hashDisplayName(h)).c_str());
+    validate_supported_hash("FileManager::setHashAlgo", h);
+    desiredHash_ = h;
+    header_->setHashAlgo(h);
+    crypto_->setHashAlgo(h);
 }
 
 void FileManager::setProgressCallback(ProgressCallback cb) {
@@ -207,9 +252,12 @@ void FileManager::setProgressCallback(ProgressCallback cb) {
 
 void FileManager::initCryptoForCreate() {
     validate_supported_cipher("FileManager::initCryptoForCreate", desiredCipher_);
+    const EHash effectiveHash = resolve_hash_for_create(desiredHash_, desiredCipher_);
     crypto_->generateSalt(header_->getSaltData());
     header_->setCipher(desiredCipher_);
+    header_->setHashAlgo(effectiveHash);
     crypto_->setCipher(desiredCipher_);
+    crypto_->setHashAlgo(effectiveHash);
     LOG_INFO("Call FileManager::initCryptoForCreate: salt generated, deriving KEK (m=%u KiB, t=%u, p=%u)",
               header_->getKdfMKib(), header_->getKdfT(), header_->getKdfP());
     emitProgress(ProgressStage::DerivingKey, 0.0);
@@ -421,10 +469,10 @@ void FileManager::readMeta() {
         char* hdrPtr = reinterpret_cast<char*>(hdrBuf.data());
         try {
             containerFile_.readAt(offset, hdrPtr, HEADER_SIZE);
+            header_->read(hdrBuf);
         } catch (...) {
             return false;
         }
-        header_->read(hdrBuf);
         return header_->validate();
     };
 
@@ -469,6 +517,8 @@ void FileManager::readMeta() {
 
         try {
             crypto_->setCipher(header_->getCipher());
+            validate_supported_hash("FileManager::readMeta", header_->getHashAlgo());
+            crypto_->setHashAlgo(header_->getHashAlgo());
             if (!kekDerived) {
                 // password_ is never modified by deriveKek (takes const ref); use it directly.
                 validateKdfParamsAndDeriveKek();
@@ -539,7 +589,7 @@ void FileManager::extract(const std::string& pathToOutputFolder) {
 
     size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
     DecryptPipeline::Config cfg{workerCount, 2 * workerCount};
-    DecryptPipeline pipeline(*crypto_, cfg);
+    DecryptPipeline pipeline(*crypto_, cfg, header_->getHashAlgo());
     auto fio = makeFragmentedIO();
     std::atomic<bool> noCancel{false};
     auto progress = [this](uint64_t processed, uint64_t total) {
@@ -661,7 +711,7 @@ uint64_t FileManager::writeChunks(uint64_t offset, bool reportProgress) {
 
     size_t workerCount = std::max(2u, std::thread::hardware_concurrency());
     EncryptPipeline::Config cfg{workerCount, 2 * workerCount};
-    EncryptPipeline pipeline(*crypto_, cfg);
+    EncryptPipeline pipeline(*crypto_, cfg, header_->getHashAlgo());
     auto fragmentedIO = makeFragmentedIO();
     std::atomic<bool> noCancel{false};
     std::function<void(uint64_t, uint64_t)> progress;

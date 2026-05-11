@@ -6,7 +6,7 @@
  *   [nonce 12B][JSON ciphertext][auth tag 16B]
  *
  * JSON format (matches FileTable::serialize() in C++):
- *   { "next_write_offset": N, "files": [ { "name", "size", "offset", "chunks", "checksum_sha256" } ] }
+ *   { "next_write_offset": N, "files": [ { "name", "size", "offset", "chunks", "checksum" } ] }
  */
 
 /**
@@ -44,7 +44,7 @@ async function readFileTable(file, header, slotOffset, dekKey) {
         size:           f.size,
         offset:         f.offset,
         chunks:         f.chunks,
-        checksumSha256: f.checksum_sha256,
+        checksum:       f.checksum,
     }));
 
     return {

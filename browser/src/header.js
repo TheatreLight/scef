@@ -18,6 +18,11 @@ const SCEF = Object.freeze({
     CIPHER_AES_256_GCM:    0x01,
     CIPHER_KUZNECHIK_GCM:  0x02,
 
+    // Hash IDs
+    HASH_SHA_256:       0x01,
+    HASH_STREEBOG_256:  0x02,
+    HASH_STREEBOG_512:  0x03,
+
     // Binary layout offsets
     POS_MAGIC:           0x0000,
     POS_VERSION_MAJOR:   0x0004,
@@ -40,6 +45,7 @@ const SCEF = Object.freeze({
     POS_BLOCK_SIZE:      0x008C,
     POS_HEADER_VERSION:  0x0090,
     POS_FLAGS:           0x0094,
+    POS_HASH_ALGO_ID:    0x0098,
     POS_HEADER_HMAC:     0x00A0,
     POS_JSON_METADATA:   0x0200,
 
@@ -117,6 +123,7 @@ function parseHeader(buffer) {
         blockSize:      dv.getUint32(SCEF.POS_BLOCK_SIZE, true),
         headerVersion:  dv.getUint32(SCEF.POS_HEADER_VERSION, true),
         flags:          dv.getUint32(SCEF.POS_FLAGS, true),
+        hashAlgoId:     dv.getUint8(SCEF.POS_HASH_ALGO_ID),
         headerHmac:     new Uint8Array(buffer, SCEF.POS_HEADER_HMAC, 32),
     };
 

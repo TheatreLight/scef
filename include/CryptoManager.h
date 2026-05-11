@@ -2,6 +2,7 @@
 #define CRYPTO_MANAGER_H
 
 #include "enums/ECiphers.h"
+#include "enums/EHash.h"
 
 #include <botan/secmem.h>
 
@@ -44,8 +45,8 @@ public:
                    const std::array<uint8_t, DEK_SIZE>& encrypted_dek,
                    const std::array<uint8_t, 16>& dek_auth_tag);
 
-    // Compute HMAC-SHA256 of data using the derived KEK as the HMAC key.
-    // Used to produce the header_hmac field.
+    // Compute HMAC of data using the selected hash and derived KEK as the HMAC key.
+    // Used to produce the 32-byte header_hmac field; longer outputs are truncated.
     [[nodiscard]] std::array<uint8_t, 32> computeHmac(
         const uint8_t* data, size_t size) const;
 
@@ -71,6 +72,9 @@ public:
     bool isDekReady() const { return dek_ready_; }
     void setCipher(ECipher c);
     const std::string& getCipherAlgo() const noexcept { return cipherAlgo_; }
+    void setHashAlgo(EHash h);
+    EHash getHashAlgo() const noexcept { return hash_algo_; }
+    static bool isHmacAvailable(EHash h);
 
 private:
     // Derived key-encryption key (32 bytes). Zeroed on destruction.
@@ -81,6 +85,7 @@ private:
     bool kek_ready_ = false;
     bool dek_ready_ = false;
     std::string cipherAlgo_ = "AES-256/GCM";
+    EHash hash_algo_ = EHash::SHA_256;
 };
 
 #endif // CRYPTO_MANAGER_H

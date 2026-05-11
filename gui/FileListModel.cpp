@@ -26,7 +26,7 @@ QVariant FileListModel::data(const QModelIndex& index, int role) const
     case SizeRole:
         return QVariant::fromValue(static_cast<quint64>(entry.size));
     case ChecksumRole:
-        return QString::fromStdString(entry.checksum_sha256);
+        return QString::fromStdString(entry.checksum);
     default:
         return {};
     }

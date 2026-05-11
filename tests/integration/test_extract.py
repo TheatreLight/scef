@@ -23,6 +23,7 @@ import pytest
 from conftest import (
     DEFAULT_PASSWORD,
     DEFAULT_CONTAINER_SIZE,
+    FAST_KDF_ARGS,
     create_container,
     add_file,
     extract_files,
@@ -39,6 +40,20 @@ HEADER_SIZE = 4096
 DEFAULT_MAX_TABLE_SIZE = 65536
 # 4 * (header + file-table) = the structural minimum container size.
 MINIMAL_CONTAINER_SIZE = 4 * (HEADER_SIZE + DEFAULT_MAX_TABLE_SIZE)  # 278528 bytes
+
+
+def create_container_with_cipher_hash(cdir: pathlib.Path, files: list[pathlib.Path],
+                                      cipher: str, hash_name: str):
+    args = ["create", "-c", str(cdir)]
+    for file in files:
+        args += ["-f", str(file)]
+    args += [
+        "-s", str(DEFAULT_CONTAINER_SIZE),
+        "--cipher", cipher,
+        "--hash", hash_name,
+    ]
+    args += FAST_KDF_ARGS
+    return run_scef(args)
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +283,24 @@ class TestExtractLargeFile:
         assert actual == expected, (
             "Partial-last-block file content does not match original"
         )
+
+
+class TestExtractStreebog:
+    """Round-trip extraction with Kuznechik-GCM and Streebog-512 checksums."""
+
+    def test_kuznechik_streebog512_roundtrip_byte_for_byte(self, tmp_path):
+        cdir = tmp_path / "c"
+        cdir.mkdir()
+        outdir = tmp_path / "out"
+        outdir.mkdir()
+        expected = bytes((i * 19 + 7) & 0xFF for i in range(4097))
+        src = make_file_with_bytes(tmp_path / "streebog512.bin", expected)
+
+        create_container_with_cipher_hash(
+            cdir, [src], cipher="kuznechik", hash_name="streebog512")
+        extract_files(cdir, outdir, files=["streebog512.bin"])
+
+        assert (outdir / "streebog512.bin").read_bytes() == expected
 
 
 # ---------------------------------------------------------------------------

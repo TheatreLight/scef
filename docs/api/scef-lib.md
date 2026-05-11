@@ -23,6 +23,8 @@ constexpr uint16_t NONCE_SIZE                = 12;
 constexpr uint16_t AUTH_TAG_SIZE             = 16;
 constexpr uint32_t ENCRYPTED_BLOCK_SIZE      = BLOCK_SIZE + NONCE_SIZE + AUTH_TAG_SIZE;
 constexpr size_t   HMAC_PROTECTED_SIZE       = 0x00A0;  // 160 bytes
+constexpr size_t   POSITION_HASH_ALGO_ID     = 0x0098;
+constexpr size_t   POSITION_RESERVED_0       = 0x0099;
 
 using HeaderBuffer = std::array<uint8_t, HEADER_SIZE>;
 ```
@@ -89,6 +91,10 @@ void setKdfP(uint32_t p);
 void setDekNonce(const std::array<uint8_t, NONCE_SIZE>& nonce);
 void setEncryptedDek(const std::array<uint8_t, 32>& enc_dek);
 void setDekAuthTag(const std::array<uint8_t, AUTH_TAG_SIZE>& tag);
+
+void setHashAlgo(EHash algo);
+// Set the hash algorithm used for header HMAC and file-entry checksums.
+// Must be called before serialize(). Default: EHash::SHA_256.
 ```
 
 #### Getters
@@ -107,6 +113,9 @@ uint64_t getContainerSize() const;
 uint32_t getKdfMKib() const;
 uint32_t getKdfT() const;
 uint32_t getKdfP() const;
+EHash    getHashAlgo() const;
+// Return the hash algorithm stored in hash_algo_id.
+// Returns EHash::SHA_256 for newly constructed headers (before read()).
 ```
 
 ---
@@ -170,6 +179,12 @@ void setCipher(ECipher c);
 // Set the cipher for container creation. Call BEFORE write().
 // Default: ECipher::AES_256_GCM.
 
+void setHashAlgo(EHash algo);
+// Set the hash algorithm for container creation (header HMAC + file checksums). Call BEFORE write().
+// Default: EHash::SHA_256 for AES-256-GCM, EHash::Streebog_512 for Kuznechik-GCM.
+// If the requested algorithm is unavailable in the Botan build, Streebog-512 falls back to
+// Streebog-256 (LOG_WARN); if that also fails, LOG_ERROR + throw.
+
 void setProgressCallback(ProgressCallback cb);
 // Optional: install a callback invoked at each pipeline stage.
 // Signature: void(ProgressStage stage, double fraction).
@@ -191,7 +206,7 @@ void extract(const std::string& pathToOutputFolder);
 // Decrypt and write files. If filesList_ is empty: extract all.
 // Otherwise: extract only the named files.
 // Path traversal protection: file names sanitized with filesystem::path::filename().
-// SHA-256 checksums verified after extraction.
+// Checksums verified after extraction using the algorithm from header.getHashAlgo().
 
 void setFilesList(const std::vector<std::string>& filesList);
 // Replace the file list without re-opening the container.
@@ -250,12 +265,22 @@ void unwrapDek(
 // Requires kek_ready_ == true. Sets dek_ready_ = true.
 // Throws std::runtime_error("Wrong password: DEK authentication failed") on auth failure.
 
+void setHashAlgo(EHash algo);
+// Set the hash algorithm used by computeHmac() and the encrypt/decrypt pipelines.
+// Must be called before computeHmac() or any pipeline operation.
+// On create: called after resolving the effective algorithm from --hash / cipher defaults.
+// On open: called immediately after decoding header.getHashAlgo(), before HMAC verification.
+
 [[nodiscard]] std::array<uint8_t, 32> computeHmac(
     const uint8_t* data,
     size_t size
 ) const;
-// Compute HMAC-SHA256 of data using KEK as the HMAC key.
+// Compute HMAC of data using KEK as the HMAC key.
+// The algorithm is determined by the EHash value set via setHashAlgo() (default: SHA-256).
+// For Streebog-512, the full 64-byte HMAC output is truncated to its first 32 bytes
+// before being returned (RFC 2104 / FIPS 198 truncation).
 // Requires kek_ready_ == true.
+// Throws std::runtime_error if the algorithm is unavailable in the Botan build.
 
 void encrypt(const char* data, char* output, size_t dataSize);
 // Encrypt one plaintext chunk (up to BLOCK_SIZE bytes).
@@ -286,11 +311,12 @@ void generateSalt(std::array<uint8_t, 32>& salt);
 
 ```cpp
 struct FileEntry {
-    std::string name;           // filename only (no path)
-    size_t size;                // plaintext size in bytes
-    size_t offset;              // container byte offset of first chunk
-    size_t chunks;              // number of encrypted chunks
-    std::string checksum_sha256; // hex uppercase SHA-256
+    std::string name;      // filename only (no path)
+    size_t size;           // plaintext size in bytes
+    size_t offset;         // container byte offset of first chunk
+    size_t chunks;         // number of encrypted chunks
+    std::string checksum;  // hex uppercase hash of plaintext; 64 chars (SHA-256 / Streebog-256)
+                           // or 128 chars (Streebog-512); algorithm matches header hash_algo_id
 };
 ```
 
@@ -485,6 +511,37 @@ static int recommendedMinScore(EKDFProfile profile) noexcept;
 
 ## Enums
 
+### EHash (include/enums/EHash.h)
+
+```cpp
+enum class EHash : uint8_t {
+    SHA_256      = 0x01,   // HMAC output 32 bytes — no truncation
+    Streebog_256 = 0x02,   // HMAC output 32 bytes — no truncation
+    Streebog_512 = 0x03,   // HMAC output 64 bytes — truncated to first 32 bytes
+};
+```
+
+**Helper free functions** (`include/enums/EHash.h`):
+
+```cpp
+bool        isSupportedHash(EHash h) noexcept;
+// True for SHA_256, Streebog_256, Streebog_512.
+
+const char* botanHashName(EHash h);
+// Botan hash function name string: "SHA-256", "Streebog-256", "Streebog-512".
+
+const char* botanHmacName(EHash h);
+// Botan HMAC name string: "HMAC(SHA-256)", "HMAC(Streebog-256)", "HMAC(Streebog-512)".
+
+size_t      hashOutputSize(EHash h) noexcept;
+// Raw hash output in bytes: 32 for SHA_256 / Streebog_256, 64 for Streebog_512.
+
+EHash       defaultHashForCipher(ECipher c) noexcept;
+// Returns EHash::SHA_256 for AES_256_GCM; EHash::Streebog_512 for Kuznechik_GCM.
+```
+
+---
+
 ### ECipher (include/enums/ECiphers.h)
 
 ```cpp
@@ -534,6 +591,8 @@ Common exception messages:
 | `"Container file does not exist: ..."` | `init()` with `create_new=false` on missing file |
 | `"Header KDF parameters out of acceptable range"` | Corrupt or crafted header |
 | `"Argon2id not available in this Botan build"` | Botan built without Argon2id |
+| `"Unsupported container version"` | `version_minor != 1` (v1.0 containers are not supported) |
+| `"HMAC algorithm unavailable: HMAC(Streebog-512)"` | Botan build lacks Streebog-512 (on open — hard error; on create — fallback to Streebog-256) |
 | `"There is no such file in current container or wrong file name."` | `extract()` with non-existent file name |
 
 ---
@@ -544,7 +603,7 @@ The following classes are defined in `include/` but are **not part of the public
 
 | Class | Header | Purpose |
 |-------|--------|---------|
-| `EncryptPipeline` | `include/EncryptPipeline.h` | Multi-stage pipeline (reader/worker/writer threads) for parallel file encryption; computes SHA-256 checksums internally and calls `fileTable_.addFileEntry()` |
+| `EncryptPipeline` | `include/EncryptPipeline.h` | Multi-stage pipeline (reader/worker/writer threads) for parallel file encryption; computes file checksums using the algorithm from `EHash` (passed at construction) and calls `fileTable_.addFileEntry()` |
 | `DecryptPipeline` | `include/DecryptPipeline.h` | Multi-stage pipeline for parallel file decryption |
 | `FragmentedIO` | `include/FragmentedIO.h` | Facade that routes pipeline reads/writes through `NativeFile`, automatically skipping slot reserved areas |
 | `CryptoContext` | `include/CryptoContext.h` | Per-thread fast-path cipher context used by pipeline workers |

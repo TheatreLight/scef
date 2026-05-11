@@ -103,6 +103,7 @@ public:
     //   profile == None  → use the supplied m_kib, t, p directly (custom mode).
     void setKdfParams(EKDFProfile profile, uint32_t m_kib, uint32_t t, uint32_t p);
     void setCipher(ECipher c);
+    void setHashAlgo(EHash h);
     void setProgressCallback(ProgressCallback cb);
 
     void readMeta();
@@ -119,6 +120,7 @@ public:
     // Returned reference is valid only while this FileManager instance is alive.
     const std::vector<FileEntry>& getFilesTable() const { return fileTable_.getFilesTable(); }
     ECipher getCipher() const noexcept { return header_->getCipher(); }
+    EHash getHashAlgo() const noexcept { return header_->getHashAlgo(); }
 
 private:
     // Returns array of slot offsets computed from header fields.
@@ -225,6 +227,7 @@ private:
 
     uint64_t activeSlotOffset_   = 0;   // byte offset of the slot used by readMeta()
     ECipher desiredCipher_ = ECipher::AES_256_GCM;
+    EHash desiredHash_ = EHash::None;
 };
 
 #endif // FILE_MANAGER_H
