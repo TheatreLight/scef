@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SCEF Windows Installer — WiX 3
+  ================================
+  This file uses WiX 3 syntax (namespace http://schemas.microsoft.com/wix/2006/wi).
+  It is intentionally WiX 3 (not WiX 5) to build with the already-installed
+  WiX Toolset v3.14 without requiring .NET SDK or the dotnet global tool.
+
+  Build pipeline (run from installer/ directory; paths must be absolute):
+
+    set WIX3=C:\Program Files (x86)\WiX Toolset v3.14\bin
+    set STAGING=C:\absolute\path\to\installer\staging
+
+    "%WIX3%\heat.exe" dir "%STAGING%" -cg HarvestedFiles -gg -g1 -srd -sreg -sfrag ^
+        -dr INSTALLFOLDER -var var.StagingDir -out Harvest.wxs
+
+    "%WIX3%\candle.exe" -arch x64 -dVersion=0.1.0 -dStagingDir="%STAGING%" ^
+        -ext WixUIExtension -ext WixUtilExtension Package.wxs Harvest.wxs
+
+    "%WIX3%\light.exe" -ext WixUIExtension -ext WixUtilExtension ^
+        -cultures:en-us -out dist\scef-0.1.0-x64.msi Package.wixobj Harvest.wixobj
+
+  The build_installer.ps1 script handles all of this automatically.
+
+  UpgradeCode must never change across versions: A7C3E2F1-8B4D-4A9E-BC21-6F5D3E7A1C08
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product
+    Id="*"
+    Name="SCEF"
+    Version="$(var.Version)"
+    Manufacturer="MEPhI SCEF Project"
+    UpgradeCode="A7C3E2F1-8B4D-4A9E-BC21-6F5D3E7A1C08"
+    Language="1033"
+    Codepage="1252">
+
+    <Package
+      InstallerVersion="500"
+      Compressed="yes"
+      InstallScope="perMachine"
+      Description="SCEF Encrypted Container Manager"
+      Manufacturer="MEPhI SCEF Project" />
+
+    <!-- Single embedded cabinet — produces a self-contained .msi with no separate .cab.
+         MediaTemplate is supported in WiX 3.10+ (present in 3.14). -->
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Upgrade policy: block downgrades; replace older versions automatically.
+         WiX 3 does not support the Schedule attribute on MajorUpgrade;
+         it defaults to afterInstallInitialize which is the correct behaviour. -->
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of SCEF is already installed. Please uninstall it first." />
+
+    <!-- WiX UI: license page + installation folder + feature selection dialogs.
+         WiX 3 uses <UIRef> (not <ui:WixUI>). WixUIExtension is passed to light.exe. -->
+    <UIRef Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUILicenseRtf" Value="assets\LICENSE.rtf" />
+
+    <!--
+      PATH change notice shown on the install completion (Finish) page.
+      WixUIExitDialogOptionalText is the standard WiX variable for this purpose.
+    -->
+    <WixVariable Id="WixUIExitDialogOptionalText"
+                 Value="Open a new terminal window to use the 'scef' CLI." />
+
+    <!-- ===== PROPERTIES ===================================================== -->
+
+    <!--
+      Detect VC++ 2022 Redistributable x64.
+      The VC redist installer writes this key with Installed=1 (DWORD).
+
+      WiX 3 has no Type="integer" for RegistrySearch — only Type="raw".
+      With Type="raw", MSI returns DWORD registry values with a '#' prefix, so
+      DWORD value 1 comes back as the string "#1". The condition
+        NOT VCREDIST_INSTALLED AND NOT REMOVE
+      tests whether the property is non-empty (i.e. the key exists); the '#' prefix
+      does not affect this — the condition is true when the property is undefined,
+      and false (skip install) when it is set to any non-empty string including "#1".
+    -->
+    <Property Id="VCREDIST_INSTALLED">
+      <RegistrySearch
+        Id="VcRedistSearch"
+        Root="HKLM"
+        Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+        Name="Installed"
+        Type="raw" />
+    </Property>
+
+    <!-- Desktop shortcut: visible in the feature tree but unselected by default.
+         Level=2 + INSTALLLEVEL=1 means the feature appears in the WixUI_FeatureTree
+         dialog but is not installed unless the user opts in.
+         Level=0 would hide it from the dialog entirely. -->
+    <Property Id="INSTALLLEVEL" Value="1" />
+
+    <!-- ===== DIRECTORY TREE ================================================= -->
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+
+      <!-- C:\Program Files\ (64-bit) -->
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="SCEF" />
+      </Directory>
+
+      <!-- C:\ProgramData\Microsoft\Windows\Start Menu\Programs\ -->
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="StartMenuSCEF" Name="SCEF" />
+      </Directory>
+
+      <!-- C:\Users\<user>\Desktop\ -->
+      <Directory Id="DesktopFolder" Name="Desktop" />
+
+    </Directory>
+
+    <!-- ===== ICON =========================================================== -->
+
+    <!--
+      scef.ico ships as a file (installer/assets/scef.ico) because scef-gui.exe
+      currently has no embedded icon resource (.rc file). The placeholder ICO is
+      generated by build_installer.ps1 if absent.
+      This element registers the icon with Windows Installer for use in shortcuts.
+    -->
+    <Icon Id="ScefIcon" SourceFile="assets\scef.ico" />
+
+    <!-- ===== COMPONENTS ===================================================== -->
+
+    <!--
+      System PATH — appends [INSTALLFOLDER] so `scef` works in any new shell.
+      System='yes': modifies HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment.
+      Part='last': appends to the existing PATH value.
+      Permanent='no': removed on uninstall.
+    -->
+    <Component Id="CmpPath" Directory="INSTALLFOLDER"
+               Guid="D4F6A8C0-3E5A-4F9B-BC2D-4A7E0B3F5C8D">
+      <Environment Id="EnvPath"
+                   Name="PATH"
+                   Value="[INSTALLFOLDER]"
+                   Part="last"
+                   Action="set"
+                   System="yes"
+                   Permanent="no" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\MEPhI\SCEF"
+                     Name="PathInstalled"
+                     Type="integer" Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <!--
+      .scef file association.
+      ProgId: SCEF.Container.1
+      Description: "SCEF Encrypted Container"
+      Open command: "C:\Program Files\SCEF\scef-gui.exe" "%1"
+      Default icon: [INSTALLFOLDER]scef.ico, index 0
+
+      Note: HKCR RegistryValue syntax is identical in WiX 3 and WiX 5.
+    -->
+    <Component Id="CmpFileAssoc" Directory="INSTALLFOLDER"
+               Guid="E5A7C9D1-4F6B-4A0C-BD3E-5B8F1C4A6D9E">
+      <!-- Extension -> ProgId mapping -->
+      <RegistryValue Root="HKCR"
+                     Key=".scef"
+                     Value="SCEF.Container.1"
+                     Type="string"
+                     KeyPath="yes" />
+      <!-- ProgId description -->
+      <RegistryValue Root="HKCR"
+                     Key="SCEF.Container.1"
+                     Value="SCEF Encrypted Container"
+                     Type="string" />
+      <!-- Default icon: ship scef.ico next to the EXE and use index 0 -->
+      <RegistryValue Root="HKCR"
+                     Key="SCEF.Container.1\DefaultIcon"
+                     Value="[INSTALLFOLDER]scef.ico,0"
+                     Type="string" />
+      <!-- Open verb -->
+      <RegistryValue Root="HKCR"
+                     Key="SCEF.Container.1\shell\open\command"
+                     Value="&quot;[INSTALLFOLDER]scef-gui.exe&quot; &quot;%1&quot;"
+                     Type="string" />
+      <RegistryValue Root="HKCR"
+                     Key="SCEF.Container.1\shell\open"
+                     Name="FriendlyAppName"
+                     Value="SCEF Encrypted Container Manager"
+                     Type="string" />
+    </Component>
+
+    <!--
+      Placeholder icon installed next to the EXEs so the file association
+      DefaultIcon path resolves correctly at runtime.
+      Sourced from assets\ (outside staging) — not harvested by heat.
+    -->
+    <Component Id="CmpIcon" Directory="INSTALLFOLDER"
+               Guid="F6B8A0E2-5A7C-4B1D-BE4F-6C9A2D5B7E0F">
+      <File Id="ScefIcoFile"
+            Source="assets\scef.ico"
+            KeyPath="yes" />
+    </Component>
+
+    <!--
+      Start Menu shortcut component.
+      In non-advertised installs, Shortcut cannot be KeyPath; use a RegistryValue instead.
+      Target is a path string — no File Id reference needed.
+    -->
+    <Component Id="CmpStartMenuShortcut" Directory="StartMenuSCEF"
+               Guid="B2D4F6A8-1C3E-4D7F-9A0B-2E5C8F1D3A6B">
+      <Shortcut Id="StartMenuShortcut"
+                Directory="StartMenuSCEF"
+                Name="SCEF"
+                Description="SCEF Encrypted Container Manager"
+                Target="[INSTALLFOLDER]scef-gui.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="ScefIcon"
+                IconIndex="0" />
+      <RemoveFolder Id="CleanStartMenuSCEF" Directory="StartMenuSCEF" On="uninstall" />
+      <!-- HKCU is required by ICE38/ICE43: components installing into
+           ProgramMenuFolder are treated as per-user destinations even in a
+           per-machine install, so the KeyPath must live in HKCU. -->
+      <RegistryValue Root="HKCU"
+                     Key="Software\MEPhI\SCEF"
+                     Name="StartMenuInstalled"
+                     Type="integer" Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <!--
+      Desktop shortcut — optional feature, Level=2 means off by default
+      (see INSTALLLEVEL=1 above). User enables it in the feature tree dialog.
+      In non-advertised installs, Shortcut cannot be KeyPath; use a RegistryValue instead.
+    -->
+    <Component Id="CmpDesktopShortcut" Directory="DesktopFolder"
+               Guid="A1C3E597-6B8D-4A2C-AE6F-8A0B2C4E6F8A">
+      <Shortcut Id="DesktopShortcut"
+                Directory="DesktopFolder"
+                Name="SCEF"
+                Description="SCEF Encrypted Container Manager"
+                Target="[INSTALLFOLDER]scef-gui.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="ScefIcon"
+                IconIndex="0" />
+      <!-- HKCU required by ICE38/ICE43 — DesktopFolder is a per-user destination. -->
+      <RegistryValue Root="HKCU"
+                     Key="Software\MEPhI\SCEF"
+                     Name="DesktopInstalled"
+                     Type="integer" Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <!--
+      VC++ 2022 Redistributable.
+      Embedded as a binary resource and executed as a deferred, elevated custom action.
+
+      WiX 3 uses BinaryKey (not BinaryRef) as the attribute name on CustomAction.
+
+      TRADE-OFF on Return="ignore":
+        If the redist install fails (e.g., reboot already pending), the MSI install
+        still succeeds. This is intentional: the redist is present on virtually all
+        modern Windows 10/11 machines, so failures are extremely rare. The registry
+        check (VCREDIST_INSTALLED) skips the action entirely when the redist is
+        already installed, making this code path uncommon anyway.
+    -->
+    <Binary Id="VcRedistBinary" SourceFile="cache\VC_redist.x64.exe" />
+
+    <CustomAction Id="InstallVcRedist"
+                  BinaryKey="VcRedistBinary"
+                  ExeCommand="/install /quiet /norestart"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <!-- ===== FEATURES ======================================================= -->
+
+    <Feature Id="FeatureMain"
+             Title="SCEF Application"
+             Description="SCEF binaries, Qt runtime, browser viewer, Botan library, and licenses."
+             Level="1"
+             Absent="disallow"
+             AllowAdvertise="no">
+      <ComponentRef Id="CmpPath" />
+      <ComponentRef Id="CmpFileAssoc" />
+      <ComponentRef Id="CmpIcon" />
+      <ComponentRef Id="CmpStartMenuShortcut" />
+      <!-- HarvestedFiles ComponentGroup is defined in Harvest.wxs (generated by heat) -->
+      <ComponentGroupRef Id="HarvestedFiles" />
+    </Feature>
+
+    <!--
+      Desktop shortcut: visible in the feature tree but unselected by default.
+      Level=2 + INSTALLLEVEL=1 (set above) means the feature is visible in the
+      WixUI_FeatureTree dialog but not installed unless the user opts in.
+    -->
+    <Feature Id="FeatureDesktopShortcut"
+             Title="Desktop Shortcut"
+             Description="Place a shortcut to SCEF on the Desktop."
+             Level="2"
+             AllowAdvertise="no">
+      <ComponentRef Id="CmpDesktopShortcut" />
+    </Feature>
+
+    <!-- ===== INSTALL SEQUENCES ============================================== -->
+
+    <!--
+      Run vcredist only on fresh install or upgrade (NOT removal),
+      and only if the registry check did not find it already installed.
+
+      With Type="raw", the property is set to "#1" (DWORD 1 with '#' prefix) when
+      the key is present, so NOT VCREDIST_INSTALLED is false (skip) when installed,
+      and true (run) when the property is empty/undefined.
+    -->
+    <InstallExecuteSequence>
+      <Custom Action="InstallVcRedist" Before="InstallFinalize">
+        NOT VCREDIST_INSTALLED AND NOT REMOVE
+      </Custom>
+    </InstallExecuteSequence>
+
+  </Product>
+
+</Wix>
